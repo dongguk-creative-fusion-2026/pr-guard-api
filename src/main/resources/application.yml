@@ -44,6 +44,9 @@ prguard:
     min-co-support: 3
     min-confidence: 0.5
     max-structure-chars: 6000
+  links:
+    # PR 코멘트의 "분석 과정 보기" 링크 대상 (pr-guard-web)
+    web-url: ${WEB_URL:https://pr-guard-web.vercel.app}
   verdict:
     # MAJOR 가 이 개수 이상이면 "수정 후 머지" (BLOCKER 는 1개만 있어도 "머지 비권장")
     major-threshold: 1

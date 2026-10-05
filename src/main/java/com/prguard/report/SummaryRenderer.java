@@ -18,7 +18,8 @@ public class SummaryRenderer {
     private static final int MAX_FILE_ROWS = 50;
     private static final int MAX_FINDING_ROWS = 40;
 
-    public String render(String headSha, List<ChangedFile> files, AnalysisResult result) {
+    /** @param reviewUrl 화면의 리뷰 상세(분석 과정) 주소. 없으면 null */
+    public String render(String headSha, List<ChangedFile> files, AnalysisResult result, String reviewUrl) {
         int additions = files.stream().mapToInt(ChangedFile::additions).sum();
         int deletions = files.stream().mapToInt(ChangedFile::deletions).sum();
         List<Finding> findings = result.findings();
@@ -30,6 +31,9 @@ public class SummaryRenderer {
                 .append("** · ").append(counts(findings)).append("\n\n");
         sb.append('`').append(shortSha(headSha)).append("` 기준 · 변경 파일 ").append(files.size())
                 .append("개 · +").append(additions).append(" / -").append(deletions).append("\n\n");
+        if (reviewUrl != null) {
+            sb.append("🔎 [분석 과정 보기](").append(reviewUrl).append(")\n\n");
+        }
         if (result.summary() != null && !result.summary().isBlank()) {
             sb.append(result.summary().strip()).append("\n\n");
         }

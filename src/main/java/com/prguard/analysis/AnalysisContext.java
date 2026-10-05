@@ -7,6 +7,7 @@ import com.prguard.index.MethodInfo;
 import com.prguard.index.RepoIndex;
 import com.prguard.workspace.Checkout;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
@@ -27,7 +28,8 @@ public final class AnalysisContext {
     private List<ChangedMethod> changedMethods = List.of();
     private GitHistory history = GitHistory.empty();
     private List<BlameLine> blame = List.of();
-    private final List<String> notes = new ArrayList<>();
+    // 검사기들이 동시에 남길 수 있다
+    private final List<String> notes = Collections.synchronizedList(new ArrayList<>());
 
     public AnalysisContext(PullInfo pull, List<ChangedFile> files) {
         this.pull = pull;
