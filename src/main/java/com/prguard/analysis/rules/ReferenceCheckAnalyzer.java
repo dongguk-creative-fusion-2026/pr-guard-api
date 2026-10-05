@@ -30,6 +30,11 @@ public class ReferenceCheckAnalyzer extends SnapshotAnalyzer {
     }
 
     @Override
+    public Category category() {
+        return Category.IMPACT;
+    }
+
+    @Override
     protected List<Finding> analyzeSnapshot(Side side, RepoIndex index, AnalysisContext ctx) {
         List<Finding> result = new ArrayList<>();
         for (CallSite call : index.calls()) {

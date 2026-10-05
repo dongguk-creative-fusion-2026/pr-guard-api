@@ -11,17 +11,28 @@ import com.prguard.index.MethodDiff;
 import com.prguard.index.RepoIndex;
 import com.prguard.review.LlmReview;
 import com.prguard.review.ReviewInput;
+import com.prguard.events.EventSink;
+import com.prguard.events.Stage;
 import com.prguard.review.Reviewer;
+import com.prguard.review.StatsOnlyReviewer;
 import com.prguard.workspace.Checkout;
 import com.prguard.workspace.RepoWorkspace;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 /**
@@ -50,10 +61,11 @@ public class AnalysisPipeline {
     private final Reviewer reviewer;
     private final VerdictPolicy verdictPolicy;
     private final AnalysisProperties props;
+    private final Executor executor;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
-                            AnalysisProperties props) {
+                            AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -61,42 +73,58 @@ public class AnalysisPipeline {
         this.reviewer = reviewer;
         this.verdictPolicy = verdictPolicy;
         this.props = props;
+        this.executor = executor;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
+        return run(pull, files, repoKb, EventSink.NONE);
+    }
+
+    public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink) {
         long started = System.currentTimeMillis();
         AnalysisContext ctx = new AnalysisContext(pull, files);
         Checkout checkout = null;
         try {
-            checkout = prepare(ctx, repoKb);
+            checkout = prepare(ctx, repoKb, sink);
             if (checkout != null) {
-                index(ctx, checkout);
-                history(ctx, checkout);
-            }
-
-            List<Finding> findings = new ArrayList<>();
-            for (Analyzer analyzer : analyzers) {
-                try {
-                    findings.addAll(analyzer.analyze(ctx));
-                } catch (RuntimeException e) {
-                    log.warn("검사기 {} 실패: {}", analyzer.id(), e.toString());
-                    ctx.note("검사기 " + analyzer.id() + " 실패: " + e.getMessage());
+                index(ctx, checkout, sink);
+                history(ctx, checkout, sink);
+            } else {
+                for (Stage stage : List.of(Stage.INDEX_BASE, Stage.INDEX_HEAD, Stage.METHOD_DIFF, Stage.HISTORY)) {
+                    sink.skipped(stage, "소스가 없어 건너뜀");
                 }
             }
 
-            String summary;
-            try {
-                LlmReview llm = reviewer.review(reviewInput(ctx));
-                summary = llm.summary();
-                findings.addAll(toFindings(llm, ctx));
-            } catch (RuntimeException e) {
-                log.warn("LLM 리뷰 실패: {}", e.toString());
-                ctx.note("LLM 리뷰 실패: " + e.getMessage());
-                summary = "LLM 리뷰를 하지 못했습니다. 정적 분석 결과만 표시합니다.";
+            // 검사기(분류별)와 LLM 리뷰는 서로의 결과를 쓰지 않으므로 동시에 돌린다
+            Map<Stage, List<Analyzer>> groups = new EnumMap<>(Stage.class);
+            for (Analyzer analyzer : analyzers) {
+                groups.computeIfAbsent(checkStage(analyzer.category()), k -> new ArrayList<>()).add(analyzer);
             }
+            List<CompletableFuture<List<Finding>>> checks = new ArrayList<>();
+            for (Stage stage : List.of(Stage.CHECK_A, Stage.CHECK_B, Stage.CHECK_C, Stage.CHECK_D)) {
+                List<Analyzer> group = groups.getOrDefault(stage, List.of());
+                if (group.isEmpty()) {
+                    sink.skipped(stage, "검사 규칙 준비 중");
+                    continue;
+                }
+                checks.add(CompletableFuture.supplyAsync(() -> runChecks(stage, group, ctx, sink), executor));
+            }
+            CompletableFuture<LlmOutcome> llm = CompletableFuture.supplyAsync(() -> runLlm(ctx, sink), executor);
 
+            List<Finding> findings = new ArrayList<>();
+            checks.forEach(f -> findings.addAll(f.join()));
+            LlmOutcome outcome = llm.join();
+            findings.addAll(outcome.findings());
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
-            return new AnalysisResult(findings, verdictPolicy.decide(findings), summary, reviewer.name(),
+
+            Verdict verdict = verdictPolicy.decide(findings);
+            sink.done(Stage.VERDICT, verdict.label(), data(
+                    "verdict", verdict.name(),
+                    "blocker", count(findings, Severity.BLOCKER),
+                    "major", count(findings, Severity.MAJOR),
+                    "minor", count(findings, Severity.MINOR),
+                    "total", findings.size()));
+            return new AnalysisResult(findings, verdict, outcome.summary(), reviewer.name(),
                     summarize(ctx, System.currentTimeMillis() - started));
         } finally {
             if (checkout != null) {
@@ -105,39 +133,143 @@ public class AnalysisPipeline {
         }
     }
 
-    private Checkout prepare(AnalysisContext ctx, long repoKb) {
+    /** 분류 → 그래프 노드. 분류가 없는 기반 검사(컴파일 등)는 영향 분석(B) 노드에 묶는다. */
+    private static Stage checkStage(Category category) {
+        return switch (category) {
+            case INTENT -> Stage.CHECK_A;
+            case SECURITY -> Stage.CHECK_C;
+            case RISK -> Stage.CHECK_D;
+            case IMPACT, GENERAL -> Stage.CHECK_B;
+        };
+    }
+
+    private List<Finding> runChecks(Stage stage, List<Analyzer> group, AnalysisContext ctx, EventSink sink) {
+        long t = System.currentTimeMillis();
+        sink.running(stage, String.join(", ", group.stream().map(Analyzer::id).toList()));
+        List<Finding> result = new ArrayList<>();
+        for (Analyzer analyzer : group) {
+            try {
+                result.addAll(analyzer.analyze(ctx));
+            } catch (RuntimeException e) {
+                log.warn("검사기 {} 실패: {}", analyzer.id(), e.toString());
+                ctx.note("검사기 " + analyzer.id() + " 실패: " + e.getMessage());
+            }
+        }
+        sink.done(stage, "지적 " + result.size() + "건", data(
+                "analyzers", group.stream().map(Analyzer::id).toList(),
+                "findings", findingViews(result),
+                "ms", System.currentTimeMillis() - t));
+        return result;
+    }
+
+    private record LlmOutcome(String summary, List<Finding> findings) {
+    }
+
+    private LlmOutcome runLlm(AnalysisContext ctx, EventSink sink) {
+        long t = System.currentTimeMillis();
+        if (reviewer instanceof StatsOnlyReviewer) {
+            sink.skipped(Stage.LLM, "OPENAI_API_KEY 미설정");
+            return new LlmOutcome(reviewer.review(reviewInput(ctx)).summary(), List.of());
+        }
+        sink.running(Stage.LLM, reviewer.name());
+        try {
+            LlmReview llm = reviewer.review(reviewInput(ctx));
+            List<Finding> findings = toFindings(llm, ctx);
+            sink.done(Stage.LLM, "지적 " + findings.size() + "건", data(
+                    "model", reviewer.name(),
+                    "findings", findingViews(findings),
+                    "dropped", llm.findings().size() - findings.size(),
+                    "ms", System.currentTimeMillis() - t));
+            return new LlmOutcome(llm.summary(), findings);
+        } catch (RuntimeException e) {
+            log.warn("LLM 리뷰 실패: {}", e.toString());
+            ctx.note("LLM 리뷰 실패: " + e.getMessage());
+            sink.failed(Stage.LLM, e.getMessage());
+            return new LlmOutcome("LLM 리뷰를 하지 못했습니다. 정적 분석 결과만 표시합니다.", List.of());
+        }
+    }
+
+    private Checkout prepare(AnalysisContext ctx, long repoKb, EventSink sink) {
         PullInfo pull = ctx.pull();
+        long t = System.currentTimeMillis();
+        sink.running(Stage.CHECKOUT, pull.repo().fullName());
         try {
             Checkout checkout = workspace.prepare(pull.repo(), repoKb, pull.number(), pull.baseRef(), pull.headSha());
             ctx.setCheckout(checkout);
+            sink.done(Stage.CHECKOUT, shortSha(checkout.baseSha()) + " → " + shortSha(checkout.headSha()), data(
+                    "baseSha", checkout.baseSha(),
+                    "headSha", checkout.headSha(),
+                    "repoKb", repoKb,
+                    "ms", System.currentTimeMillis() - t));
             return checkout;
         } catch (RuntimeException e) {
             log.warn("{}#{} 소스 준비 실패: {}", pull.repo().fullName(), pull.number(), e.getMessage());
             ctx.note("소스를 받지 못해 diff 만 분석했습니다: " + e.getMessage());
+            sink.failed(Stage.CHECKOUT, e.getMessage());
             return null;
         }
     }
 
-    private void index(AnalysisContext ctx, Checkout checkout) {
+    private void index(AnalysisContext ctx, Checkout checkout, EventSink sink) {
         try {
-            RepoIndex base = indexer.index(checkout.baseDir());
-            RepoIndex head = indexer.index(checkout.headDir());
-            List<ChangedMethod> changed = MethodDiff.compute(base, head);
-            ctx.setIndexes(base, head, changed);
-            if (head.parsedFiles() == 0) {
+            // base 와 head 는 서로 독립이라 동시에 파싱한다
+            CompletableFuture<RepoIndex> base = CompletableFuture.supplyAsync(
+                    () -> indexSide(Stage.INDEX_BASE, checkout.baseDir(), sink), executor);
+            CompletableFuture<RepoIndex> head = CompletableFuture.supplyAsync(
+                    () -> indexSide(Stage.INDEX_HEAD, checkout.headDir(), sink), executor);
+            RepoIndex baseIndex = base.join();
+            RepoIndex headIndex = head.join();
+
+            long t = System.currentTimeMillis();
+            sink.running(Stage.METHOD_DIFF, "메서드 비교");
+            List<ChangedMethod> changed = MethodDiff.compute(baseIndex, headIndex);
+            ctx.setIndexes(baseIndex, headIndex, changed);
+            sink.done(Stage.METHOD_DIFF, "바뀐 메서드 " + changed.size() + "개", data(
+                    "added", changed.stream().filter(m -> m.kind() == ChangedMethod.Kind.ADDED).count(),
+                    "removed", changed.stream().filter(m -> m.kind() == ChangedMethod.Kind.REMOVED).count(),
+                    "modified", changed.stream().filter(m -> m.kind() == ChangedMethod.Kind.MODIFIED).count(),
+                    "signatureChanged", changed.stream().filter(ChangedMethod::signatureChanged).count(),
+                    "callers", changed.stream().filter(m -> m.id() != null)
+                            .mapToInt(m -> headIndex.callersOf(m.id()).size()).sum(),
+                    "methods", impactViews(ctx, changed),
+                    "ms", System.currentTimeMillis() - t));
+            if (headIndex.parsedFiles() == 0) {
                 ctx.note("Java 소스가 없어 레포 인덱스를 만들지 않았습니다");
             }
-            if (!head.failedFiles().isEmpty()) {
-                ctx.note("파싱하지 못한 파일 " + head.failedFiles().size() + "개: "
-                        + String.join(", ", head.failedFiles().stream().limit(5).toList()));
+            if (!headIndex.failedFiles().isEmpty()) {
+                ctx.note("파싱하지 못한 파일 " + headIndex.failedFiles().size() + "개: "
+                        + String.join(", ", headIndex.failedFiles().stream().limit(5).toList()));
             }
         } catch (RuntimeException e) {
             log.warn("인덱스 실패: {}", e.toString());
             ctx.note("레포 인덱스 실패: " + e.getMessage());
+            sink.failed(Stage.METHOD_DIFF, e.getMessage());
         }
     }
 
-    private void history(AnalysisContext ctx, Checkout checkout) {
+    private RepoIndex indexSide(Stage stage, Path dir, EventSink sink) {
+        long t = System.currentTimeMillis();
+        sink.running(stage, "Java 소스 파싱");
+        try {
+            RepoIndex index = indexer.index(dir);
+            long methods = index.methods().values().stream().filter(m -> !m.implicit()).count();
+            sink.done(stage, "Java " + index.parsedFiles() + "개 · 메서드 " + methods + "개", data(
+                    "files", index.parsedFiles(),
+                    "types", index.types().size(),
+                    "methods", methods,
+                    "calls", index.calls().size(),
+                    "failedFiles", index.failedFiles().size(),
+                    "ms", System.currentTimeMillis() - t));
+            return index;
+        } catch (RuntimeException e) {
+            sink.failed(stage, e.getMessage());
+            throw e;
+        }
+    }
+
+    private void history(AnalysisContext ctx, Checkout checkout, EventSink sink) {
+        long t = System.currentTimeMillis();
+        sink.running(Stage.HISTORY, "git log · blame");
         try {
             GitHistory history = historyLoader.load(checkout, props.maxCommits());
             List<BlameLine> blame = new ArrayList<>();
@@ -154,10 +286,75 @@ public class AnalysisPipeline {
                 }
             }
             ctx.setHistory(history, blame);
+
+            List<CoChange> coChanges = new ArrayList<>();
+            for (ChangedFile f : ctx.files()) {
+                coChanges.addAll(history.coChanges(f.filename(), props.minCoSupport(), props.minConfidence(), 3));
+            }
+            coChanges.sort(Comparator.comparingDouble(CoChange::confidence).reversed());
+            Set<String> seen = new LinkedHashSet<>();
+            List<Map<String, Object>> origins = new ArrayList<>();
+            for (BlameLine b : blame) {
+                if (seen.add(b.sha()) && origins.size() < 5) {
+                    origins.add(data("sha", b.sha(), "summary", b.summary(), "file", b.file()));
+                }
+            }
+            sink.done(Stage.HISTORY, "커밋 " + history.commits().size() + "개 분석", data(
+                    "commits", history.commits().size(),
+                    "coChanges", coChanges.stream().limit(8).toList(),
+                    "blameCommits", origins,
+                    "ms", System.currentTimeMillis() - t));
         } catch (RuntimeException e) {
             log.warn("이력 수집 실패: {}", e.toString());
             ctx.note("git 이력 수집 실패: " + e.getMessage());
+            sink.failed(Stage.HISTORY, e.getMessage());
         }
+    }
+
+    /** 영향 그래프용: 바뀐 메서드(테스트 아닌 것 먼저)와 그 호출부. */
+    private List<Map<String, Object>> impactViews(AnalysisContext ctx, List<ChangedMethod> changed) {
+        return changed.stream()
+                .sorted(Comparator.comparing(ChangedMethod::test))
+                .limit(12)
+                .map(m -> data(
+                        "id", m.id() != null ? m.id() : m.baseId(),
+                        "baseId", m.baseId(),
+                        "kind", m.kind().name(),
+                        "signatureChanged", m.signatureChanged(),
+                        "test", m.test(),
+                        "callers", callerViews(m.id() == null ? List.of() : ctx.headIndex().callersOf(m.id())),
+                        "stale", callerViews(staleCalls(ctx, m))))
+                .toList();
+    }
+
+    private static List<Map<String, Object>> callerViews(List<CallSite> calls) {
+        return calls.stream().limit(8)
+                .map(c -> data("id", c.callerId(), "file", c.file(), "line", c.line()))
+                .toList();
+    }
+
+    private static List<Map<String, Object>> findingViews(List<Finding> findings) {
+        return findings.stream().limit(20)
+                .map(f -> data("severity", f.severity().name(), "ruleId", f.ruleId(), "title", f.title(),
+                        "file", f.file(), "line", f.line()))
+                .toList();
+    }
+
+    private static long count(List<Finding> findings, Severity severity) {
+        return findings.stream().filter(f -> f.severity() == severity).count();
+    }
+
+    /** null 값을 허용하는 순서 있는 맵 (Map.of 는 null 을 거부한다). */
+    static Map<String, Object> data(Object... keyValues) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < keyValues.length; i += 2) {
+            map.put((String) keyValues[i], keyValues[i + 1]);
+        }
+        return map;
+    }
+
+    private static String shortSha(String sha) {
+        return sha == null ? "-" : sha.substring(0, Math.min(7, sha.length()));
     }
 
     private ReviewInput reviewInput(AnalysisContext ctx) {
