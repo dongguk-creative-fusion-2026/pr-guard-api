@@ -1,5 +1,6 @@
 package com.prguard.report;
 
+import com.prguard.analysis.ChangedFile;
 import com.prguard.analysis.Finding;
 import com.prguard.github.GitHubClient;
 import com.prguard.github.GitHubComment;
@@ -8,7 +9,9 @@ import com.prguard.github.RepoRef;
 import com.prguard.pull.PullRequest;
 import com.prguard.pull.PullRequestRepository;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -62,14 +65,22 @@ public class CommentPublisher {
         return Optional.of(created.htmlUrl());
     }
 
-    /** 반환값은 새로 단 라인 코멘트 수. */
-    public int publishInline(RepoRef repo, PullRequest pr, String headSha, List<Finding> findings) {
+    /**
+     * 반환값은 새로 단 라인 코멘트 수.
+     * GitHub 은 diff 밖 라인에 코멘트를 달 수 없고 하나라도 섞이면 묶음 전체를 거절하므로,
+     * 이 PR 의 diff 안에 있는 라인만 보낸다. 나머지는 요약 코멘트에만 남는다.
+     */
+    public int publishInline(RepoRef repo, PullRequest pr, String headSha, List<Finding> findings,
+                             List<ChangedFile> files) {
         if (!github.canWrite()) {
             return 0;
         }
+        Map<String, Set<Integer>> commentable = new HashMap<>();
+        files.forEach(f -> commentable.put(f.filename(), f.patch().commentableLines()));
         Set<String> already = posted.fingerprints(pr.id());
         List<Finding> targets = findings.stream()
                 .filter(f -> f.line() != null && f.file() != null && !already.contains(f.fingerprint()))
+                .filter(f -> commentable.getOrDefault(f.file(), Set.of()).contains(f.line()))
                 .limit(MAX_INLINE)
                 .toList();
         if (targets.isEmpty()) {
