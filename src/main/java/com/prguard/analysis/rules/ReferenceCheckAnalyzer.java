@@ -33,13 +33,15 @@ public class ReferenceCheckAnalyzer extends SnapshotAnalyzer {
     protected List<Finding> analyzeSnapshot(Side side, RepoIndex index, AnalysisContext ctx) {
         List<Finding> result = new ArrayList<>();
         for (CallSite call : index.calls()) {
-            String target = shortType(call.scopeType()) + "." + display(call.calleeName());
+            String target = call.calleeName().equals("<init>")
+                    ? shortType(call.scopeType()) + " 생성자"
+                    : shortType(call.scopeType()) + "." + call.calleeName() + "()";
             String caller = callerAnchor(call.callerId());
             if (call.resolution() == CallSite.Resolution.MISSING) {
                 result.add(new Finding("UNRESOLVED_METHOD", Category.IMPACT, Severity.BLOCKER,
                         call.file(), call.line(),
                         "존재하지 않는 메서드 호출: " + target,
-                        target + " 는 레포 안 어디에도 선언되어 있지 않습니다. 지워졌거나 잘못된 이름이면 컴파일되지 않습니다.",
+                        target + "가 레포 안 어디에도 선언되어 있지 않습니다. 지워졌거나 잘못된 이름이면 컴파일되지 않습니다.",
                         "호출 위치 " + call.callerId() + " · 대상 타입 " + call.scopeType(),
                         caller + "->" + call.scopeType() + "#" + call.calleeName(), Finding.TOOL));
                 continue;
@@ -56,7 +58,7 @@ public class ReferenceCheckAnalyzer extends SnapshotAnalyzer {
                 result.add(new Finding("ARITY_MISMATCH", Category.IMPACT, Severity.BLOCKER,
                         call.file(), call.line(),
                         "인자 수가 맞지 않는 호출: " + target,
-                        target + " 를 인자 " + call.argCount() + "개로 호출하지만 선언은 " + signatures
+                        target + "를 인자 " + call.argCount() + "개로 호출하지만 선언은 " + signatures
                                 + " 입니다. 시그니처가 바뀌었는데 이 호출부를 고치지 않았을 수 있습니다.",
                         "호출 위치 " + call.callerId(),
                         caller + "->" + call.scopeType() + "#" + call.calleeName() + "/" + call.argCount(),
