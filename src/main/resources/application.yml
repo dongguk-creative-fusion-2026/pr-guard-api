@@ -1,0 +1,33 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: pr-guard-api
+  datasource:
+    url: jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:prguard}
+    username: ${PGUSER:prguard}
+    password: ${PGPASSWORD:prguard}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+prguard:
+  github:
+    api-url: https://api.github.com
+    token: ${GITHUB_TOKEN:}
+  openai:
+    api-url: https://api.openai.com/v1
+    api-key: ${OPENAI_API_KEY:}
+    model: ${OPENAI_MODEL:gpt-5-mini}
+  poll:
+    interval: ${POLL_INTERVAL:PT5M}
+  review:
+    worker-delay: ${REVIEW_WORKER_DELAY:PT10S}
+    # 리뷰어에 넘기는 patch 총 길이 상한 (문자 수)
+    max-patch-chars: ${REVIEW_MAX_PATCH_CHARS:60000}
+    # running 인 채로 이 시간이 지나면 죽은 작업으로 보고 다시 집는다
+    stale-after: PT10M
