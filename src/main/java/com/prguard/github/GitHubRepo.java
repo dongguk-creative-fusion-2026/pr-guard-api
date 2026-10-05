@@ -12,5 +12,6 @@ public record GitHubRepo(
         GitHubUser owner,
         @JsonProperty("private") boolean isPrivate,
         String htmlUrl,
-        String defaultBranch) {
+        String defaultBranch,
+        long size) {
 }

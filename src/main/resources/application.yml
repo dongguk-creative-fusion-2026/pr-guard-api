@@ -19,6 +19,7 @@ prguard:
   github:
     api-url: https://api.github.com
     token: ${GITHUB_TOKEN:}
+    comment-enabled: ${GITHUB_COMMENT_ENABLED:true}
   openai:
     api-url: https://api.openai.com/v1
     api-key: ${OPENAI_API_KEY:}
@@ -30,4 +31,19 @@ prguard:
     # 리뷰어에 넘기는 patch 총 길이 상한 (문자 수)
     max-patch-chars: ${REVIEW_MAX_PATCH_CHARS:60000}
     # running 인 채로 이 시간이 지나면 죽은 작업으로 보고 다시 집는다
-    stale-after: PT10M
+    stale-after: PT15M
+  workspace:
+    # 레포 clone 과 PR 별 worktree 위치
+    dir: ${WORKSPACE_DIR:${java.io.tmpdir}/prguard}
+    # 이보다 큰 레포는 받지 않는다 (KB)
+    max-repo-kb: ${WORKSPACE_MAX_REPO_KB:300000}
+    git-timeout: PT3M
+    keep-mirror: P3D
+  analysis:
+    max-commits: 1000
+    min-co-support: 3
+    min-confidence: 0.5
+    max-structure-chars: 6000
+  verdict:
+    # MAJOR 가 이 개수 이상이면 "수정 후 머지" (BLOCKER 는 1개만 있어도 "머지 비권장")
+    major-threshold: 1
