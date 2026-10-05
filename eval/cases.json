@@ -1,0 +1,225 @@
+{
+  "repo": "dongguk-creative-fusion-2026/pr-guard-sandbox",
+  "cases": [
+    {
+      "pr": 2,
+      "title": "게시글 제목 길이 제한 추가",
+      "clean": false,
+      "expected": [
+        {
+          "id": "2-security-config",
+          "category": "A",
+          "keywords": [
+            "permitAll",
+            "/api/users",
+            "인증",
+            "보안",
+            "요청하지 않은",
+            "범위",
+            "의도"
+          ],
+          "description": "제목 길이 제한과 무관하게 /api/users/** 를 인증 없이 열어 버림",
+          "files": [
+            "SecurityConfig.java"
+          ]
+        },
+        {
+          "id": "2-bio-length",
+          "category": "A",
+          "keywords": [
+            "MAX_BIO_LENGTH",
+            "1000",
+            "300",
+            "소개",
+            "bio",
+            "요청하지 않은",
+            "의도"
+          ],
+          "description": "요청과 무관한 소개 길이 상한 변경. DB 컬럼은 VARCHAR(300) 이라 1000자는 저장 실패",
+          "files": [
+            "UserService.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 3,
+      "title": "댓글 삭제 시 게시글 댓글 수 감소",
+      "clean": false,
+      "expected": [
+        {
+          "id": "3-decrease-not-called",
+          "category": "A",
+          "keywords": [
+            "호출",
+            "delete",
+            "삭제 흐름",
+            "삭제 시"
+          ],
+          "description": "decreaseCommentCount 를 만들었지만 댓글 삭제(delete)에서 호출하지 않음",
+          "files": [
+            "CommentService.java",
+            "Post.java",
+            "decreaseCommentCount"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 4,
+      "title": "게시글 조회 로직 단순화",
+      "clean": false,
+      "expected": [
+        {
+          "id": "4-null-callers",
+          "category": "B",
+          "keywords": [
+            "requireOwner",
+            "CommentService#add",
+            "CommentService.add",
+            "#update(",
+            "#delete(",
+            "update(",
+            "delete(",
+            "viewPost"
+          ],
+          "description": "getPost 가 null 을 돌려주게 바뀌었지만 update/delete/CommentService.add 는 null 을 가정하지 않음",
+          "files": [
+            "PostService.java",
+            "CommentService.java",
+            "PostController.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 5,
+      "title": "조회수 표시 제거",
+      "clean": false,
+      "expected": [
+        {
+          "id": "5-dropped-column-used",
+          "category": "B",
+          "keywords": [
+            "incrementViewCount",
+            "네이티브",
+            "native",
+            "PostRepository"
+          ],
+          "description": "view_count 컬럼을 지웠지만 PostRepository 네이티브 쿼리와 viewPost 가 여전히 사용",
+          "files": [
+            "PostRepository.java",
+            "PostService.java",
+            "V7__drop_post_view_count.sql"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 6,
+      "title": "게시글의 댓글 전체 삭제 API 추가",
+      "clean": false,
+      "expected": [
+        {
+          "id": "6-missing-owner-check",
+          "category": "C",
+          "keywords": [
+            "권한",
+            "작성자",
+            "requireOwner",
+            "owner",
+            "인가",
+            "누구나"
+          ],
+          "description": "다른 수정·삭제 경로는 모두 OwnershipGuard 로 작성자를 확인하는데 일괄 삭제만 확인하지 않음",
+          "files": [
+            "CommentService.java",
+            "CommentController.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 7,
+      "title": "게시글 카테고리 추가",
+      "clean": false,
+      "expected": [
+        {
+          "id": "7-missing-migration",
+          "category": "D",
+          "keywords": [
+            "마이그레이션",
+            "migration",
+            "category",
+            "컬럼",
+            "스키마"
+          ],
+          "description": "Entity 에 category 컬럼을 추가했지만 Flyway 마이그레이션이 없음 (ddl-auto: validate 라 기동 실패)",
+          "files": [
+            "Post.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 8,
+      "title": "새 글 작성 시 알림 서버 연동",
+      "clean": false,
+      "expected": [
+        {
+          "id": "8-hardcoded-secret",
+          "category": "C",
+          "keywords": [
+            "NOTIFY_SECRET",
+            "시크릿",
+            "secret",
+            "하드코딩",
+            "비밀"
+          ],
+          "description": "알림 서버 시크릿을 소스에 하드코딩",
+          "files": [
+            "NewPostNotifier.java"
+          ]
+        },
+        {
+          "id": "8-fake-dependency",
+          "category": "C",
+          "keywords": [
+            "okhtttp",
+            "오타",
+            "존재하지",
+            "의존성",
+            "artifact"
+          ],
+          "description": "com.squareup.okhttp3:okhtttp 는 존재하지 않는 아티팩트 (okhttp 오타)",
+          "files": [
+            "build.gradle"
+          ]
+        },
+        {
+          "id": "8-test-constructor",
+          "category": "B",
+          "keywords": [
+            "생성자",
+            "constructor",
+            "PostServiceTest",
+            "테스트",
+            "컴파일"
+          ],
+          "description": "PostService 생성자에 인자가 늘었지만 PostServiceTest 는 그대로라 테스트 컴파일 실패",
+          "files": [
+            "PostService.java",
+            "PostServiceTest.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 9,
+      "title": "게시글 목록 페이지 조회 추가",
+      "clean": true,
+      "expected": []
+    }
+  ],
+  "matching": "지적 하나가 files 중 하나와 keywords 중 하나를 함께 언급하면 탐지. 구체적 근거(실제 호출부·쿼리 이름)를 댄 경우만 인정하도록 키워드를 좁게 잡았다."
+}

@@ -5,7 +5,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import org.springframework.core.io.ClassPathResource;
 
-/** 시스템 프롬프트(리뷰 템플릿)는 resources/prompts/review-system.md 에서 고친다. */
+/** 시스템 프롬프트(리뷰 기준)는 resources/prompts/review-system.md 에서 고친다. */
 public class ReviewPrompt {
 
     private final String system;
@@ -24,7 +24,7 @@ public class ReviewPrompt {
         return system;
     }
 
-    /** PR 정보와 파일별 patch. 총 길이가 maxPatchChars 를 넘으면 뒤 파일부터 patch 를 생략한다. */
+    /** PR 정보, 구조 정보, 파일별 patch. 총 길이가 maxPatchChars 를 넘으면 뒤 파일부터 patch 를 생략한다. */
     public String user(ReviewInput in) {
         StringBuilder sb = new StringBuilder();
         sb.append("레포: ").append(in.repo()).append('\n');
@@ -32,9 +32,16 @@ public class ReviewPrompt {
         sb.append("작성자: ").append(in.author()).append('\n');
         sb.append("브랜치: ").append(in.headRef()).append(" -> ").append(in.baseRef()).append('\n');
         if (in.body() != null && !in.body().isBlank()) {
-            sb.append("\nPR 본문:\n").append(in.body().strip()).append('\n');
+            sb.append("\n## PR 본문\n").append(in.body().strip()).append('\n');
         }
-        sb.append("\n변경 파일 ").append(in.files().size()).append("개\n");
+        if (!in.commitMessages().isEmpty()) {
+            sb.append("\n## 커밋 메시지\n");
+            in.commitMessages().forEach(m -> sb.append("- ").append(m.strip().replace("\n", " / ")).append('\n'));
+        }
+        if (in.structure() != null && !in.structure().isBlank()) {
+            sb.append("\n## 레포 구조 정보 (정적 분석)\n").append(in.structure().strip()).append('\n');
+        }
+        sb.append("\n## 변경 파일 ").append(in.files().size()).append("개\n");
 
         int budget = maxPatchChars;
         for (ReviewInput.ChangedFile f : in.files()) {

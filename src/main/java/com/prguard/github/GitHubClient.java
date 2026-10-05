@@ -1,5 +1,6 @@
 package com.prguard.github;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.core.ParameterizedTypeReference;
@@ -36,7 +37,7 @@ public class GitHubClient {
     }
 
     public boolean canWrite() {
-        return props.hasToken();
+        return props.hasToken() && props.commentEnabled();
     }
 
     public GitHubRepo getRepo(RepoRef repo) {
@@ -65,6 +66,20 @@ public class GitHubClient {
                     List<GitHubPull> pulls = res.bodyTo(new ParameterizedTypeReference<List<GitHubPull>>() {});
                     return new OpenPulls(false, res.getHeaders().getETag(), pulls == null ? List.of() : pulls);
                 });
+    }
+
+    public GitHubPull getPull(RepoRef repo, int number) {
+        return http.get().uri("/repos/{o}/{r}/pulls/{n}", repo.owner(), repo.name(), number)
+                .retrieve().body(GitHubPull.class);
+    }
+
+    /** PR 의 커밋 메시지 (오래된 순, 최대 250개). */
+    public List<String> listPullCommitMessages(RepoRef repo, int number) {
+        List<GitHubCommit> commits = http.get()
+                .uri("/repos/{o}/{r}/pulls/{n}/commits?per_page={size}", repo.owner(), repo.name(), number, PAGE_SIZE)
+                .retrieve()
+                .body(new ParameterizedTypeReference<List<GitHubCommit>>() {});
+        return commits == null ? List.of() : commits.stream().map(c -> c.commit().message()).toList();
     }
 
     public List<GitHubPullFile> listPullFiles(RepoRef repo, int number) {
@@ -96,6 +111,25 @@ public class GitHubClient {
         return http.patch().uri("/repos/{o}/{r}/issues/comments/{id}", repo.owner(), repo.name(), commentId)
                 .body(new CommentBody(body))
                 .retrieve().body(GitHubComment.class);
+    }
+
+    /**
+     * 라인 코멘트를 묶어 리뷰 하나로 남긴다 (event=COMMENT, 승인·거절 아님).
+     * 라인이 diff 밖이면 GitHub 이 422 를 준다.
+     */
+    public GitHubReview createReview(RepoRef repo, int number, String commitId, String body,
+                                     List<ReviewComment> comments) {
+        return http.post().uri("/repos/{o}/{r}/pulls/{n}/reviews", repo.owner(), repo.name(), number)
+                .body(new ReviewBody(commitId, body, "COMMENT", comments))
+                .retrieve().body(GitHubReview.class);
+    }
+
+    /** @param side head 쪽 라인이면 RIGHT */
+    public record ReviewComment(String path, int line, String side, String body) {
+    }
+
+    private record ReviewBody(@JsonProperty("commit_id") String commitId, String body, String event,
+                              List<ReviewComment> comments) {
     }
 
     private record CommentBody(String body) {

@@ -44,12 +44,13 @@ public class PullRequestRepository {
 
     public void upsertOpen(long projectId, GitHubPull pull) {
         jdbc.sql("""
-                        INSERT INTO pull_requests (project_id, number, title, author, html_url, head_sha,
+                        INSERT INTO pull_requests (project_id, number, title, body, author, html_url, head_sha,
                                                    head_ref, base_ref, state, draft, updated_at)
-                        VALUES (:projectId, :number, :title, :author, :htmlUrl, :headSha,
+                        VALUES (:projectId, :number, :title, :body, :author, :htmlUrl, :headSha,
                                 :headRef, :baseRef, 'open', :draft, now())
                         ON CONFLICT (project_id, number) DO UPDATE SET
-                            title = EXCLUDED.title, author = EXCLUDED.author, html_url = EXCLUDED.html_url,
+                            title = EXCLUDED.title, body = EXCLUDED.body, author = EXCLUDED.author,
+                            html_url = EXCLUDED.html_url,
                             head_sha = EXCLUDED.head_sha, head_ref = EXCLUDED.head_ref,
                             base_ref = EXCLUDED.base_ref, state = 'open', draft = EXCLUDED.draft,
                             updated_at = now()
@@ -57,6 +58,7 @@ public class PullRequestRepository {
                 .param("projectId", projectId)
                 .param("number", pull.number())
                 .param("title", pull.title())
+                .param("body", pull.body())
                 .param("author", pull.user() == null ? "unknown" : pull.user().login())
                 .param("htmlUrl", pull.htmlUrl())
                 .param("headSha", pull.head().sha())
