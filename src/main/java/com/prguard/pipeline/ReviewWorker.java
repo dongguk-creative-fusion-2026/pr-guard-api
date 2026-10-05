@@ -99,7 +99,7 @@ public class ReviewWorker {
 
             findings.saveAll(review.id(), result.findings());
             String url = publisher.publishSummary(repo, pr, comment).orElse(null);
-            int inline = publisher.publishInline(repo, pr, review.headSha(), result.findings());
+            int inline = publisher.publishInline(repo, pr, review.headSha(), result.findings(), files);
 
             reviews.markDone(review.id(), result.verdict(), result.reviewer(), result.summary(), comment,
                     json(result), url);
