@@ -4,7 +4,7 @@
 //
 // GitNexus CLI 의 cypher 출력은 마크다운 표라서, 인덱스(LadybugDB)를 같은 패키지의 어댑터로 직접 읽는다.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,7 +35,13 @@ const env = {
   GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR: realpathSync.native(identityCache),
   SCARF_ANALYTICS: "false",
   DO_NOT_TRACK: "1",
+  // GitNexus 는 DB 버퍼 풀(호스트 RAM 의 80%, 최대 2GB)과 파서 워커 수(코어 수 - 1)를 컨테이너가 아니라 호스트 기준으로 잡는다.
+  // 컨테이너 한도를 넘겨 강제 종료되지 않게 작게 고정한다
+  GITNEXUS_LBUG_BUFFER_POOL_SIZE: process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE ?? String(256 * 1024 * 1024),
+  GITNEXUS_WORKER_POOL_SIZE: process.env.GITNEXUS_WORKER_POOL_SIZE ?? "2",
 };
+// 아래에서 인덱스를 읽을 때도 같은 버퍼 풀 한도를 쓴다
+process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
 
 try {
   const started = Date.now();
@@ -44,8 +50,15 @@ try {
   const analyze = spawnSync(process.execPath, [`--max-old-space-size=${process.env.GRAPH_HEAP_MB ?? 2048}`, cli, "analyze", repo, "--index-only", "--skip-fts", "--skip-git"],
     { cwd: repo, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (analyze.status !== 0) {
-    const tail = `${analyze.stderr ?? ""}\n${analyze.stdout ?? ""}`.trim().slice(-2000);
-    throw new Error(`gitnexus analyze 실패 (${analyze.status ?? analyze.signal}): ${tail}`);
+    // 경고 로그(JSON 한 줄씩)는 원인과 상관없어서 뺀다
+    const tail = `${analyze.stderr ?? ""}\n${analyze.stdout ?? ""}`
+      .split("\n")
+      .filter((line) => !line.startsWith('{"level":40'))
+      .join("\n")
+      .trim()
+      .slice(-1500);
+    const oom = analyze.signal === "SIGKILL" ? ` — 메모리 부족으로 강제 종료된 것 같다 (${memoryInfo()})` : "";
+    throw new Error(`gitnexus analyze 실패 (${analyze.status ?? analyze.signal})${oom}: ${tail}`);
   }
   const analyzeMs = Date.now() - started;
 
@@ -76,6 +89,19 @@ try {
   process.exitCode = 1;
 } finally {
   rmSync(home, { recursive: true, force: true });
+}
+
+/** 컨테이너(cgroup v2) 메모리 한도와 지금까지의 최대 사용량 */
+function memoryInfo() {
+  const mb = (file) => {
+    try {
+      const v = readFileSync(`/sys/fs/cgroup/${file}`, "utf8").trim();
+      return v === "max" ? "무제한" : `${Math.round(Number(v) / 1048576)}MB`;
+    } catch {
+      return "?";
+    }
+  };
+  return `컨테이너 한도 ${mb("memory.max")}, 최대 사용 ${mb("memory.peak")}`;
 }
 
 function toGraph({ files, symbols, deps, members }, analyzeMs) {
