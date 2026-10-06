@@ -5,6 +5,7 @@ import com.prguard.github.GitHubClient;
 import com.prguard.github.GitHubException;
 import com.prguard.github.GitHubRepo;
 import com.prguard.github.RepoRef;
+import com.prguard.graph.RepoGraphRepository;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -14,10 +15,12 @@ public class ProjectService {
 
     private final ProjectRepository projects;
     private final GitHubClient github;
+    private final RepoGraphRepository graphs;
 
-    public ProjectService(ProjectRepository projects, GitHubClient github) {
+    public ProjectService(ProjectRepository projects, GitHubClient github, RepoGraphRepository graphs) {
         this.projects = projects;
         this.github = github;
+        this.graphs = graphs;
     }
 
     public List<Project> list() {
@@ -60,6 +63,8 @@ public class ProjectService {
         long id = projects.insert(owner, repo.name(), repo.htmlUrl(), repo.defaultBranch())
                 .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "PROJECT_EXISTS",
                         "이미 등록된 레포입니다: " + owner + "/" + repo.name()));
+        // 레포 전체 의존성 그래프는 GraphWorker 가 뒤에서 만든다
+        graphs.enqueue(id);
         return get(id);
     }
 
