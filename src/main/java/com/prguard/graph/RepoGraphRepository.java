@@ -58,23 +58,27 @@ public class RepoGraphRepository {
                 .optional();
     }
 
-    public void markDone(long projectId, String commitSha, String graphJson) {
-        jdbc.sql("""
+    /** RUNNING 일 때만 바꾼다. 바꿨으면 true. */
+    public boolean markDone(long projectId, String commitSha, String graphJson) {
+        return jdbc.sql("""
                         UPDATE repo_graphs SET status = 'DONE', commit_sha = :sha, graph = CAST(:graph AS jsonb),
                                                error = NULL, finished_at = now()
-                         WHERE project_id = :projectId
+                         WHERE project_id = :projectId AND status = 'RUNNING'
                         """)
                 .param("projectId", projectId)
                 .param("sha", commitSha)
                 .param("graph", graphJson)
-                .update();
+                .update() > 0;
     }
 
-    /** 실패해도 예전에 만든 그래프는 남겨 둔다. */
-    public void markFailed(long projectId, String error) {
-        jdbc.sql("UPDATE repo_graphs SET status = 'FAILED', error = :error, finished_at = now() WHERE project_id = :projectId")
+    /** RUNNING 일 때만 바꾼다. 실패해도 예전에 만든 그래프는 남겨 둔다. 바꿨으면 true. */
+    public boolean markFailed(long projectId, String error) {
+        return jdbc.sql("""
+                        UPDATE repo_graphs SET status = 'FAILED', error = :error, finished_at = now()
+                         WHERE project_id = :projectId AND status = 'RUNNING'
+                        """)
                 .param("projectId", projectId)
                 .param("error", error)
-                .update();
+                .update() > 0;
     }
 }

@@ -40,14 +40,22 @@ prguard:
     git-timeout: PT3M
     keep-mirror: P3D
   graph:
-    # 레포 전체 파일 의존성 그래프 (GitNexus). gitnexus/ 에서 npm ci 가 되어 있어야 한다
+    # 레포 전체 파일 의존성 그래프 (GitNexus).
+    # ACTIONS: 이 레포의 .github/workflows/repo-graph.yml 을 실행하고 결과를 /api/projects/{id}/graph/result 로 받는다
+    # LOCAL: 이 서버에서 직접 만든다 (gitnexus/ 에서 npm ci, node 필요. 메모리 1GB 이상 따로 필요)
+    runner: ${GRAPH_RUNNER:actions}
+    workflow-repo: dongguk-creative-fusion-2026/pr-guard-api
+    workflow: repo-graph.yml
+    workflow-ref: main
+    dispatch-token: ${GRAPH_DISPATCH_TOKEN:}
     node: ${GRAPH_NODE:node}
     script: ${GRAPH_SCRIPT:gitnexus/export.mjs}
     timeout: ${GRAPH_TIMEOUT:PT15M}
     max-nodes: 400
     heap-mb: ${GRAPH_HEAP_MB:2048}
     worker-delay: PT10S
-    stale-after: PT30M
+    # 워크플로 제한 시간(30분)보다 길게
+    stale-after: PT40M
   analysis:
     max-commits: 1000
     min-co-support: 3

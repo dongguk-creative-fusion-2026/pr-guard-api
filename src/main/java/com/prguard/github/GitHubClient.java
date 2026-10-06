@@ -3,6 +3,7 @@ package com.prguard.github;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -122,6 +123,31 @@ public class GitHubClient {
         return http.post().uri("/repos/{o}/{r}/pulls/{n}/reviews", repo.owner(), repo.name(), number)
                 .body(new ReviewBody(commitId, body, "COMMENT", comments))
                 .retrieve().body(GitHubReview.class);
+    }
+
+    /**
+     * workflow_dispatch 로 워크플로를 실행한다. 레포에 Actions 쓰기 권한이 있는 토큰이 필요하다.
+     *
+     * @param token 기본 토큰과 다른 토큰을 쓸 때 (null 이면 기본 토큰)
+     */
+    public void dispatchWorkflow(RepoRef repo, String workflow, String ref, Map<String, String> inputs, String token) {
+        http.post().uri("/repos/{o}/{r}/actions/workflows/{w}/dispatches", repo.owner(), repo.name(), workflow)
+                .headers(h -> {
+                    if (token != null && !token.isBlank()) {
+                        h.setBearerAuth(token);
+                    }
+                })
+                .body(new DispatchBody(ref, inputs))
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    public GitHubWorkflowRun getWorkflowRun(RepoRef repo, long runId) {
+        return http.get().uri("/repos/{o}/{r}/actions/runs/{id}", repo.owner(), repo.name(), runId)
+                .retrieve().body(GitHubWorkflowRun.class);
+    }
+
+    private record DispatchBody(String ref, Map<String, String> inputs) {
     }
 
     /** @param side head 쪽 라인이면 RIGHT */
