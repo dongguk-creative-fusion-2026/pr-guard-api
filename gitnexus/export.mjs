@@ -1,6 +1,7 @@
-// 레포를 GitNexus 로 인덱싱하고, 파일 단위 의존성 그래프를 JSON 으로 쓴다.
+// 레포를 GitNexus 로 인덱싱하고, 의존성 그래프를 JSON 으로 쓴다.
+// 파일 단위 의존(nodes, edges)과 그 파일들 안의 함수 · 함수 간 호출(functions, calls)을 같이 담는다.
 //
-//   node export.mjs <레포 디렉터리> <출력 JSON> [최대 노드 수]
+//   node export.mjs <레포 디렉터리> <출력 JSON> [최대 파일 수] [최대 함수 수]
 //
 // GitNexus CLI 의 cypher 출력은 마크다운 표라서, 인덱스(LadybugDB)를 같은 패키지의 어댑터로 직접 읽는다.
 import { spawnSync } from "node:child_process";
@@ -9,13 +10,15 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const [repoArg, outArg, maxArg] = process.argv.slice(2);
+const [repoArg, outArg, maxArg, maxFunctionsArg] = process.argv.slice(2);
 if (!repoArg || !outArg) {
-  console.error("usage: node export.mjs <repo-dir> <out.json> [max-nodes]");
+  console.error("usage: node export.mjs <repo-dir> <out.json> [max-files] [max-functions]");
   process.exit(2);
 }
 const repo = resolve(repoArg);
 const maxNodes = Number(maxArg ?? 400);
+const maxFunctions = Number(maxFunctionsArg ?? 2000);
+const FUNCTION_LABELS = ["Method", "Function", "Constructor"];
 
 // 파일 사이 의존으로 보는 관계. 구조(CONTAINS, DEFINES, HAS_METHOD …)와 클러스터·흐름(MEMBER_OF, STEP_IN_PROCESS)은 뺀다
 const DEP_TYPES = ["IMPORTS", "CALLS", "INJECTS", "EXTENDS", "IMPLEMENTS", "METHOD_IMPLEMENTS", "METHOD_OVERRIDES",
@@ -79,6 +82,15 @@ try {
                      RETURN a.filePath AS src, b.filePath AS dst, r.type AS type, count(*) AS n`),
       members: await q(`MATCH (s)-[r:CodeRelation]->(c:Community) WHERE r.type = 'MEMBER_OF'
                         RETURN s.filePath AS file, c.id AS id, c.label AS label, count(*) AS n`),
+      // Java record 의 컴포넌트도 Method 로 잡히는데 본문에 괄호가 없다. 그건 뺀다
+      functions: await q(`MATCH (n) WHERE label(n) IN ${cypherList(FUNCTION_LABELS)} AND n.filePath IS NOT NULL
+                            AND n.content CONTAINS '('
+                          RETURN n.id AS id, n.name AS name, label(n) AS kind, n.filePath AS file,
+                                 n.startLine AS line, n.endLine AS endLine`),
+      calls: await q(`MATCH (a)-[r:CodeRelation]->(b) WHERE r.type = 'CALLS'
+                        AND label(a) IN ${cypherList(FUNCTION_LABELS)} AND label(b) IN ${cypherList(FUNCTION_LABELS)}
+                        AND a.id <> b.id
+                      RETURN a.id AS source, b.id AS target, count(*) AS n`),
     };
   } finally {
     await closeLbug(id).catch(() => {});
@@ -104,7 +116,11 @@ function memoryInfo() {
   return `컨테이너 한도 ${mb("memory.max")}, 최대 사용 ${mb("memory.peak")}`;
 }
 
-function toGraph({ files, symbols, deps, members }, analyzeMs) {
+function cypherList(values) {
+  return `[${values.map((v) => `'${v}'`).join(", ")}]`;
+}
+
+function toGraph({ files, symbols, deps, members, functions, calls }, analyzeMs) {
   const num = (v) => Number(v); // LadybugDB 는 count 를 BigInt 로 줄 수 있다
 
   // 파일 쌍마다 관계 종류별 개수를 합친다
@@ -132,10 +148,27 @@ function toGraph({ files, symbols, deps, members }, analyzeMs) {
     degree.set(e.target, (degree.get(e.target) ?? 0) + e.weight);
   }
   // 연결이 있는 파일만, 많으면 연결이 많은 순으로 자른다
-  const kept = [...degree.keys()].sort((a, b) => degree.get(b) - degree.get(a) || a.localeCompare(b)).slice(0, maxNodes);
-  const keep = new Set(kept);
+  const ranked = [...degree.keys()].sort((a, b) => degree.get(b) - degree.get(a) || a.localeCompare(b)).slice(0, maxNodes);
+  const keep = new Set(ranked);
 
-  const nodes = kept.sort().map((file) => ({
+  // 함수: 남긴 파일 안의 것만, 연결 많은 파일부터 maxFunctions 개까지 (한 파일은 통째로 넣거나 뺀다)
+  const functionsByFile = new Map();
+  for (const f of functions) {
+    if (!keep.has(f.file)) continue;
+    functionsByFile.set(f.file, [...(functionsByFile.get(f.file) ?? []), f]);
+  }
+  const keptFunctions = [];
+  for (const file of ranked) {
+    const list = (functionsByFile.get(file) ?? []).sort((a, b) => num(a.line) - num(b.line));
+    if (keptFunctions.length + list.length > maxFunctions) continue;
+    keptFunctions.push(...list);
+  }
+  const functionIds = new Set(keptFunctions.map((f) => f.id));
+  const keptCalls = calls
+    .filter((c) => functionIds.has(c.source) && functionIds.has(c.target))
+    .map((c) => ({ source: c.source, target: c.target, weight: num(c.n) }));
+
+  const nodes = [...ranked].sort().map((file) => ({
     id: file,
     community: community.get(file)?.id ?? null,
     symbols: symbolCount.get(file) ?? 0,
@@ -154,6 +187,16 @@ function toGraph({ files, symbols, deps, members }, analyzeMs) {
     nodes,
     edges: keptEdges,
     communities: [...usedCommunities.values()].sort((a, b) => b.files - a.files),
+    // kind: Method, Function, Constructor. line·endLine: 1 부터
+    functions: keptFunctions.map((f) => ({
+      id: f.id,
+      name: f.name,
+      kind: f.kind,
+      file: f.file,
+      line: num(f.line),
+      endLine: num(f.endLine),
+    })),
+    calls: keptCalls,
     stats: {
       files: files.length,
       connectedFiles: degree.size,
@@ -161,6 +204,9 @@ function toGraph({ files, symbols, deps, members }, analyzeMs) {
       edges: edges.size,
       shownEdges: keptEdges.length,
       truncated: degree.size > nodes.length,
+      functions: functions.length,
+      shownFunctions: keptFunctions.length,
+      shownCalls: keptCalls.length,
       analyzeMs,
     },
   };
