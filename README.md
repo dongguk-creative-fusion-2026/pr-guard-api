@@ -12,7 +12,10 @@ POST /api/projects {url}
   └ URL 파싱 → GET /repos/{o}/{r} 로 public 확인 → projects 저장 → repo_graphs 에 PENDING
 
 GraphWorker (10초마다) — PENDING 그래프 하나를 집어서
-  └ 기본 브랜치 최신 커밋 worktree → GitNexus 인덱싱 (gitnexus/export.mjs) → 파일 단위 의존성 그래프 저장
+  └ GitHub Actions 워크플로(.github/workflows/repo-graph.yml) 실행 → RUNNING
+     └ 워크플로: 기본 브랜치 clone → GitNexus 인덱싱 (gitnexus/export.mjs) → 파일 단위 그래프를
+        POST /api/projects/{id}/graph/result 로 보냄 (API 는 runId 로 우리 워크플로 실행인지 GitHub 에 확인)
+  (GitNexus 가 메모리를 1GB 가까이 써서 Railway 컨테이너 대신 Actions 에서 돌린다. GRAPH_RUNNER=local 이면 이 서버에서 직접)
 
 PollScheduler (POLL_INTERVAL 마다) / POST /api/projects/{id}/poll
   └ GET /pulls?state=open (ETag, 변경 없으면 304)
@@ -40,7 +43,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | `github` | GitHub REST 클라이언트, 레포 URL 파싱 |
 | `project` / `pull` | 프로젝트 등록, PR 상태 저장 |
 | `workspace` | 레포 clone, PR 별 base/head worktree, 그래프용 브랜치 worktree, git 실행 |
-| `graph` | 레포 전체 파일 의존성 그래프: GitNexus 실행(`GraphBuilder`), 대기열 처리(`GraphWorker`) |
+| `graph` | 레포 전체 파일 의존성 그래프: 대기열 처리·워크플로 실행(`GraphWorker`), 결과 받기(`GraphController`), 로컬 실행(`GraphBuilder`) |
 | `index` | Java 레포 인덱스 (`JavaIndexer`, `RepoIndex`), base↔head 메서드 비교 (`MethodDiff`) |
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
 | `diff` | GitHub patch 해석 (hunk, 추가·삭제 라인, 라인 코멘트 가능 라인) |
@@ -81,8 +84,9 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | GET | `/api/reviews/{id}` | 리뷰 + 지적 사항 + 분석 재료 요약(`context`) |
 | GET | `/api/projects/{id}/graph` | 레포 의존성 그래프 (상태, 기준 커밋, `graph`: 파일 노드·의존 간선·커뮤니티) |
 | POST | `/api/projects/{id}/graph` | 기본 브랜치 최신 커밋으로 그래프 다시 만들기 (202) |
+| POST | `/api/projects/{id}/graph/result` | 그래프 워크플로가 결과를 보낸다 (`{runId, commitSha, graph}` 또는 `{runId, error}`) |
 
-오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `PROJECT_EXISTS`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502)
+오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502)
 
 ## 평가
 
@@ -108,21 +112,22 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | `POLL_INTERVAL` | `PT5M` | 폴링 주기 (ISO-8601) |
 | `WORKSPACE_DIR` | `{tmp}/prguard` | clone·worktree 위치 |
 | `WORKSPACE_MAX_REPO_KB` | `300000` | 이보다 큰 레포는 clone 하지 않고 diff 만 분석 |
-| `GRAPH_NODE` | `node` | 그래프 생성에 쓰는 node (22.18+ 또는 24.11+) |
-| `GRAPH_SCRIPT` | `gitnexus/export.mjs` | 그래프 생성 스크립트. Docker 이미지에서는 `/app/gitnexus/export.mjs` |
-| `GRAPH_TIMEOUT` | `PT15M` | 그래프 하나의 제한 시간 |
-| `GRAPH_HEAP_MB` | `2048` | GitNexus 분석 프로세스 힙 |
+| `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
+| `GRAPH_DISPATCH_TOKEN` | (`GITHUB_TOKEN`) | pr-guard-api 레포에 Actions 쓰기 권한이 있는 토큰. 워크플로 실행에 쓴다 |
+| `GRAPH_NODE` | `node` | local: node (22.18+ 또는 24.11+) |
+| `GRAPH_SCRIPT` | `gitnexus/export.mjs` | local: 그래프 생성 스크립트 |
+| `GRAPH_TIMEOUT` | `PT15M` | local: 그래프 하나의 제한 시간 |
+| `GRAPH_HEAP_MB` | `2048` | local: GitNexus 분석 프로세스 힙 |
 | `PORT` | 8080 | Railway 가 넣어 준다 |
 
 ## 로컬 실행
 
 ```bash
 docker compose up -d
-(cd gitnexus && npm ci)
 GITHUB_COMMENT_ENABLED=false ./gradlew bootRun
 ```
 
-git 과 node 가 PATH 에 있어야 한다. 의존성 그래프는 [GitNexus](https://github.com/abhigyanpatwari/GitNexus) (PolyForm Noncommercial 라이선스, 비상업 용도로만 사용) 로 만든다. 스키마는 기동 시 Flyway 가 만든다 (`src/main/resources/db/migration`).
+git 이 PATH 에 있어야 한다. 로컬에서는 결과를 받을 공개 주소가 없으니 그래프를 보려면 `GRAPH_RUNNER=local` 로 띄운다 (`cd gitnexus && npm ci`, node 필요). 그래프 워크플로는 레포 Variables 의 `PR_GUARD_API_URL` 로 결과를 보낸다. 의존성 그래프는 [GitNexus](https://github.com/abhigyanpatwari/GitNexus) (PolyForm Noncommercial 라이선스, 비상업 용도로만 사용) 로 만든다. 스키마는 기동 시 Flyway 가 만든다 (`src/main/resources/db/migration`).
 
 ## Railway 배포
 

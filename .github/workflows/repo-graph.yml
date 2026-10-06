@@ -1,0 +1,103 @@
+# 레포 전체 파일 의존성 그래프를 GitNexus 로 만들어 API 에 보낸다.
+# API(GraphWorker)가 workflow_dispatch 로 실행하고, API 는 결과를 받을 때 run-name 으로 어떤 프로젝트인지 확인한다.
+# GitNexus 분석에 메모리가 1GB 가까이 들어서 Railway 컨테이너 대신 여기서 돌린다.
+name: repo-graph
+run-name: graph ${{ inputs.project_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: PR Guard 프로젝트 id
+        required: true
+      repo:
+        description: 분석할 public 레포 (owner/name)
+        required: true
+      branch:
+        description: 분석할 브랜치 (기본 브랜치)
+        required: true
+
+permissions:
+  contents: read
+
+# 같은 프로젝트를 다시 만들면 앞의 실행은 버린다
+concurrency:
+  group: graph-${{ inputs.project_id }}
+  cancel-in-progress: true
+
+env:
+  # 결과를 보낼 API. 레포 Variables 에 PR_GUARD_API_URL 로 둔다
+  API_URL: ${{ vars.PR_GUARD_API_URL }}
+  PROJECT_ID: ${{ inputs.project_id }}
+  REPO: ${{ inputs.repo }}
+  BRANCH: ${{ inputs.branch }}
+
+jobs:
+  graph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: gitnexus
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: GitNexus 설치 캐시
+        id: modules
+        uses: actions/cache@v4
+        with:
+          path: gitnexus/node_modules
+          key: gitnexus-modules-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
+
+      - name: GitNexus 설치
+        if: steps.modules.outputs.cache-hit != 'true'
+        working-directory: gitnexus
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      # GitNexus 가 실행마다 설치 파일을 해시해서 자기 식별을 만든다. 결과를 남겨 두면 1분 가까이 줄어든다
+      - name: 분석기 식별 캐시
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/gitnexus-identity
+          key: gitnexus-identity-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
+
+      - name: 대상 레포 받기
+        id: target
+        run: |
+          git clone --quiet --depth 1 --no-tags --branch "$BRANCH" "https://github.com/$REPO.git" "$RUNNER_TEMP/target"
+          echo "sha=$(git -C "$RUNNER_TEMP/target" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: 그래프 만들기
+        env:
+          GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR: ${{ runner.temp }}/gitnexus-identity
+          GRAPH_HEAP_MB: 4096
+          GITNEXUS_LBUG_BUFFER_POOL_SIZE: 1073741824
+          GITNEXUS_WORKER_POOL_SIZE: 3
+        run: |
+          set -o pipefail
+          node gitnexus/export.mjs "$RUNNER_TEMP/target" "$RUNNER_TEMP/graph.json" 400 2>&1 | tee "$RUNNER_TEMP/export.log"
+
+      - name: 결과 보내기
+        # 취소(새 실행에 밀림)면 보내지 않는다. 보내면 새 실행 상태를 실패로 덮는다
+        if: success() || failure()
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          if [ -s "$RUNNER_TEMP/graph.json" ]; then
+            jq -n --argjson run "$GITHUB_RUN_ID" --arg sha "$SHA" --slurpfile g "$RUNNER_TEMP/graph.json" \
+              '{runId: $run, commitSha: $sha, graph: $g[0]}' > "$RUNNER_TEMP/body.json"
+          else
+            touch "$RUNNER_TEMP/export.log"
+            # 경고 로그 줄은 빼고 마지막 부분만
+            grep -v '^{"level":40' "$RUNNER_TEMP/export.log" | tail -c 1500 > "$RUNNER_TEMP/tail.log" || true
+            jq -n --argjson run "$GITHUB_RUN_ID" --rawfile log "$RUNNER_TEMP/tail.log" \
+              --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{runId: $run, error: ("그래프 워크플로 실패 (" + $url + "): " + (if $log == "" then "대상 레포를 받지 못했거나 중간에 취소됨" else $log end))}' \
+              > "$RUNNER_TEMP/body.json"
+          fi
+          curl --fail-with-body --silent --show-error -X POST \
+            -H 'Content-Type: application/json' --data-binary "@$RUNNER_TEMP/body.json" \
+            "$API_URL/api/projects/$PROJECT_ID/graph/result"
