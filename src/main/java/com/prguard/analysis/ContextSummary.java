@@ -12,12 +12,22 @@ public record ContextSummary(
         String headSha,
         IndexStats baseIndex,
         IndexStats headIndex,
+        List<FileChange> files,
         List<ChangedMethodView> changedMethods,
         List<FileHistory> history,
         int historyCommits,
         List<BlameLine> blame,
         List<String> notes,
         long elapsedMs) {
+
+    /**
+     * PR 에서 바뀐 파일 (화면에서 레포 그래프 위에 영향 범위를 그릴 때 쓴다).
+     *
+     * @param status       added, modified, removed, renamed …
+     * @param previousPath 이름이 바뀐 파일의 예전 경로
+     */
+    public record FileChange(String path, String status, int additions, int deletions, String previousPath) {
+    }
 
     public record IndexStats(int files, int types, int methods, int calls, int unresolvedCalls, int failedFiles) {
     }

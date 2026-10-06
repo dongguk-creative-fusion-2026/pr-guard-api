@@ -462,6 +462,10 @@ public class AnalysisPipeline {
                 ctx.checkout().map(Checkout::baseSha).orElse(null),
                 ctx.pull().headSha(),
                 stats(ctx.baseIndex()), stats(ctx.headIndex()),
+                ctx.files().stream()
+                        .map(f -> new ContextSummary.FileChange(f.filename(), f.status(), f.additions(), f.deletions(),
+                                f.previousFilename()))
+                        .toList(),
                 methods, history, ctx.history().commits().size(),
                 ctx.blame().stream().limit(50).toList(),
                 List.copyOf(ctx.notes()), elapsedMs);
