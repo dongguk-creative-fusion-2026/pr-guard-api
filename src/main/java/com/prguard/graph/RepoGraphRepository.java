@@ -9,7 +9,8 @@ import org.springframework.stereotype.Repository;
 public class RepoGraphRepository {
 
     private static final String SELECT = """
-            SELECT project_id, status, commit_sha, graph::text AS graph, error, created_at, started_at, finished_at
+            SELECT project_id, status, commit_sha, graph::text AS graph, error, progress::text AS progress, run_url,
+                   created_at, started_at, finished_at
               FROM repo_graphs
             """;
 
@@ -30,7 +31,8 @@ public class RepoGraphRepository {
     public void enqueue(long projectId) {
         jdbc.sql("""
                         INSERT INTO repo_graphs (project_id, status) VALUES (:projectId, 'PENDING')
-                        ON CONFLICT (project_id) DO UPDATE SET status = 'PENDING', error = NULL, created_at = now()
+                        ON CONFLICT (project_id) DO UPDATE SET status = 'PENDING', error = NULL, created_at = now(),
+                                                               progress = '[]', run_url = NULL
                          WHERE repo_graphs.status NOT IN ('PENDING', 'RUNNING')
                         """)
                 .param("projectId", projectId)
@@ -43,7 +45,7 @@ public class RepoGraphRepository {
      */
     public Optional<Long> claimNext(Duration staleAfter) {
         return jdbc.sql("""
-                        UPDATE repo_graphs SET status = 'RUNNING', started_at = now(), error = NULL
+                        UPDATE repo_graphs SET status = 'RUNNING', started_at = now(), error = NULL, progress = '[]'
                          WHERE project_id = (
                                SELECT project_id FROM repo_graphs
                                 WHERE status = 'PENDING'
@@ -56,6 +58,29 @@ public class RepoGraphRepository {
                 .param("staleSeconds", staleAfter.toSeconds())
                 .query(Long.class)
                 .optional();
+    }
+
+    /** 진행 단계를 하나 덧붙인다 (만드는 중일 때만). */
+    public void appendProgress(long projectId, String stage, String message, String dataJson) {
+        jdbc.sql("""
+                        UPDATE repo_graphs
+                           SET progress = progress || jsonb_build_array(jsonb_build_object(
+                                   'stage', CAST(:stage AS text), 'message', CAST(:message AS text),
+                                   'data', COALESCE(CAST(:data AS jsonb), '{}'::jsonb), 'at', now()))
+                         WHERE project_id = :projectId AND status = 'RUNNING'
+                        """)
+                .param("projectId", projectId)
+                .param("stage", stage)
+                .param("message", message)
+                .param("data", dataJson)
+                .update();
+    }
+
+    public void setRunUrl(long projectId, String runUrl) {
+        jdbc.sql("UPDATE repo_graphs SET run_url = :url WHERE project_id = :projectId AND status = 'RUNNING'")
+                .param("projectId", projectId)
+                .param("url", runUrl)
+                .update();
     }
 
     /** RUNNING 일 때만 바꾼다. 바꿨으면 true. */

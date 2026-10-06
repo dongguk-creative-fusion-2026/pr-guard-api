@@ -12,10 +12,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record VerdictPolicy(int majorThreshold) {
 
     public Verdict decide(List<Finding> findings) {
+        return decide(findings, null);
+    }
+
+    /** @param projectThreshold 프로젝트 설정 (null 이면 기본값) */
+    public Verdict decide(List<Finding> findings, Integer projectThreshold) {
         if (findings.stream().anyMatch(f -> f.severity() == Severity.BLOCKER)) {
             return Verdict.NOT_RECOMMENDED;
         }
+        int threshold = projectThreshold != null ? projectThreshold : majorThreshold;
         long majors = findings.stream().filter(f -> f.severity() == Severity.MAJOR).count();
-        return majors >= Math.max(1, majorThreshold) ? Verdict.NEEDS_CHANGES : Verdict.MERGEABLE;
+        return majors >= Math.max(1, threshold) ? Verdict.NEEDS_CHANGES : Verdict.MERGEABLE;
     }
 }

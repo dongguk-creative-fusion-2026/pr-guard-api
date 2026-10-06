@@ -67,7 +67,17 @@ public class GraphController {
         }
     }
 
-    private void verifyRun(long projectId, long runId) {
+    /** 그래프 워크플로가 진행 단계를 알린다 (등록 화면에서 실시간으로 보여 준다). */
+    @PostMapping("/progress")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void progress(@PathVariable long id, @Validated @RequestBody GraphProgress progress) {
+        GitHubWorkflowRun run = verifyRun(id, progress.runId());
+        graphs.setRunUrl(id, run.htmlUrl());
+        graphs.appendProgress(id, progress.stage(), progress.message(),
+                progress.data() == null ? null : progress.data().toString());
+    }
+
+    private GitHubWorkflowRun verifyRun(long projectId, long runId) {
         GitHubWorkflowRun run;
         try {
             run = github.getWorkflowRun(RepoRef.parse(props.workflowRepo()), runId);
@@ -82,6 +92,14 @@ public class GraphController {
             throw new ApiException(HttpStatus.FORBIDDEN, "GRAPH_RUN_INVALID",
                     "이 프로젝트의 실행 중인 그래프 워크플로가 아닙니다: " + runId);
         }
+        return run;
+    }
+
+    /**
+     * @param stage   started, cloned, indexed …
+     * @param data    단계 수치 (파일 수 등)
+     */
+    public record GraphProgress(@NotNull Long runId, @NotNull String stage, String message, JsonNode data) {
     }
 
     /**

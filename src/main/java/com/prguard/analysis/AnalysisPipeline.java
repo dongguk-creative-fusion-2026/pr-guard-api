@@ -81,6 +81,11 @@ public class AnalysisPipeline {
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink) {
+        return run(pull, files, repoKb, sink, null);
+    }
+
+    /** @param majorThreshold 프로젝트의 판정 기준 (null 이면 기본값) */
+    public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold) {
         long started = System.currentTimeMillis();
         AnalysisContext ctx = new AnalysisContext(pull, files);
         Checkout checkout = null;
@@ -117,7 +122,7 @@ public class AnalysisPipeline {
             findings.addAll(outcome.findings());
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
 
-            Verdict verdict = verdictPolicy.decide(findings);
+            Verdict verdict = verdictPolicy.decide(findings, majorThreshold);
             sink.done(Stage.VERDICT, verdict.label(), data(
                     "verdict", verdict.name(),
                     "blocker", count(findings, Severity.BLOCKER),

@@ -46,6 +46,13 @@ public class GitHubClient {
                 .retrieve().body(GitHubRepo.class);
     }
 
+    /** 레포의 언어별 코드 크기 (바이트) */
+    public Map<String, Long> getLanguages(RepoRef repo) {
+        Map<String, Long> languages = http.get().uri("/repos/{o}/{r}/languages", repo.owner(), repo.name())
+                .retrieve().body(new ParameterizedTypeReference<Map<String, Long>>() {});
+        return languages == null ? Map.of() : languages;
+    }
+
     /** ETag 를 주면 변경이 없을 때 304 로 끝난다. 304 는 rate limit 에 잡히지 않는다. */
     public OpenPulls listOpenPulls(RepoRef repo, String etag) {
         return http.get()

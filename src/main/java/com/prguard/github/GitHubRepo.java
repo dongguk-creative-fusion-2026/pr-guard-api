@@ -13,5 +13,9 @@ public record GitHubRepo(
         @JsonProperty("private") boolean isPrivate,
         String htmlUrl,
         String defaultBranch,
-        long size) {
+        long size,
+        String description,
+        String language,
+        int stargazersCount,
+        String pushedAt) {
 }

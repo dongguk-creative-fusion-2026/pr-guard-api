@@ -84,9 +84,13 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | GET | `/api/reviews/{id}` | 리뷰 + 지적 사항 + 분석 재료 요약(`context`) |
 | GET | `/api/projects/{id}/graph` | 레포 의존성 그래프 (상태, 기준 커밋, `graph`: 파일 노드·의존 간선·커뮤니티) |
 | POST | `/api/projects/{id}/graph` | 기본 브랜치 최신 커밋으로 그래프 다시 만들기 (202) |
+| GET | `/api/projects/{id}/repo` | GitHub 레포 정보 (설명, 언어 구성, 크기 …) — 등록 화면 |
+| PATCH | `/api/projects/{id}/settings` | `{ commentEnabled, majorThreshold }` 프로젝트별 PR 코멘트 on/off, 판정 기준 (null = 기본값) |
+| POST | `/api/projects/{id}/onboarded` | 등록 화면(온보딩)을 끝냄 |
+| POST | `/api/projects/{id}/graph/progress` | 그래프 워크플로가 진행 단계를 알린다 (`{runId, stage, message, data}`) |
 | POST | `/api/projects/{id}/graph/result` | 그래프 워크플로가 결과를 보낸다 (`{runId, commitSha, graph}` 또는 `{runId, error}`) |
 
-오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502)
+오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502)
 
 ## 평가
 

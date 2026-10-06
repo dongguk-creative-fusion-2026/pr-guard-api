@@ -68,6 +68,37 @@ public class ProjectService {
         return get(id);
     }
 
+    /** 등록 화면에서 보여 줄 GitHub 레포 정보 (언어 구성 포함) */
+    public RepoInfo repoInfo(long id) {
+        Project project = get(id);
+        GitHubRepo repo = github.getRepo(project.ref());
+        return new RepoInfo(repo.description(), repo.language(), repo.stargazersCount(), repo.size(), repo.pushedAt(),
+                repo.defaultBranch(), github.getLanguages(project.ref()));
+    }
+
+    public Project updateSettings(long id, boolean commentEnabled, Integer majorThreshold) {
+        get(id);
+        if (majorThreshold != null && (majorThreshold < 1 || majorThreshold > 20)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_SETTINGS", "판정 기준은 1~20 사이여야 합니다");
+        }
+        projects.updateSettings(id, commentEnabled, majorThreshold);
+        return get(id);
+    }
+
+    public Project finishOnboarding(long id) {
+        get(id);
+        projects.markOnboarded(id);
+        return get(id);
+    }
+
+    /**
+     * @param sizeKb    GitHub 이 알려 준 레포 크기
+     * @param languages 언어별 코드 크기 (바이트)
+     */
+    public record RepoInfo(String description, String language, int stars, long sizeKb, String pushedAt,
+                           String defaultBranch, java.util.Map<String, Long> languages) {
+    }
+
     public void delete(long id) {
         if (!projects.delete(id)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", "프로젝트가 없습니다: " + id);
