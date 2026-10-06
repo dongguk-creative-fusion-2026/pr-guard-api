@@ -18,7 +18,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 레포별 clone 을 하나 유지하고, PR 마다 base/head worktree 를 만든다.
+ * 레포별 clone 을 하나 유지하고, PR 마다 base/head worktree 를 만든다 (레포 그래프는 브랜치 worktree).
  * 같은 레포에 대한 git 작업은 한 번에 하나만 한다.
  */
 @Component
@@ -67,17 +67,52 @@ public class RepoWorkspace {
         }
     }
 
+    /**
+     * 브랜치 끝 커밋의 소스를 꺼낸다. 다 쓰면 {@link #release(Snapshot)} 를 불러야 한다.
+     *
+     * @param repoKb GitHub 이 알려 준 레포 크기. 제한을 넘으면 받지 않는다
+     */
+    public Snapshot checkoutBranch(RepoRef repo, long repoKb, String branch) {
+        if (repoKb > props.maxRepoKb()) {
+            throw new GitException("레포가 너무 큽니다 (" + repoKb + "KB > " + props.maxRepoKb() + "KB)");
+        }
+        ReentrantLock lock = locks.computeIfAbsent(key(repo), k -> new ReentrantLock());
+        lock.lock();
+        try {
+            Path mirror = ensureMirror(repo);
+            git.run(mirror, "fetch", "--quiet", "--no-tags", "origin",
+                    "+refs/heads/" + branch + ":refs/remotes/origin/" + branch);
+            String sha = git.run(mirror, "rev-parse", "refs/remotes/origin/" + branch + "^{commit}").strip();
+            String name = Integer.toHexString(key(repo).hashCode()) + "-graph-" + sha.substring(0, 8);
+            Path dir = worktree(mirror, name, sha);
+            Files.setLastModifiedTime(mirror, FileTime.from(Instant.now()));
+            return new Snapshot(mirror, dir, sha);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public void release(Checkout checkout) {
-        for (Path dir : new Path[] {checkout.baseDir(), checkout.headDir()}) {
+        removeWorktrees(checkout.mirror(), checkout.baseDir(), checkout.headDir());
+    }
+
+    public void release(Snapshot snapshot) {
+        removeWorktrees(snapshot.mirror(), snapshot.dir());
+    }
+
+    private void removeWorktrees(Path mirror, Path... dirs) {
+        for (Path dir : dirs) {
             try {
-                git.run(checkout.mirror(), "worktree", "remove", "--force", dir.toString());
+                git.run(mirror, "worktree", "remove", "--force", dir.toString());
             } catch (GitException e) {
                 log.warn("worktree 정리 실패 {}: {}", dir, e.getMessage());
                 deleteQuietly(dir);
             }
         }
         try {
-            git.run(checkout.mirror(), "worktree", "prune");
+            git.run(mirror, "worktree", "prune");
         } catch (GitException e) {
             log.debug("worktree prune 실패: {}", e.getMessage());
         }
