@@ -37,6 +37,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # 진행 단계를 API 에 알린다 (등록 화면에서 실시간으로 보여 준다). 실패해도 분석은 계속한다
+      - name: 진행 알림 준비
+        run: |
+          cat > "$RUNNER_TEMP/progress.sh" <<'SH'
+          # progress <stage> <message> [data JSON]
+          data="${3:-}"
+          [ -n "$data" ] || data='{}'
+          jq -n --argjson run "$GITHUB_RUN_ID" --arg stage "$1" --arg message "$2" --argjson data "$data" \
+            '{runId: $run, stage: $stage, message: $message, data: $data}' |
+            curl --silent --show-error --max-time 10 -X POST -H 'Content-Type: application/json' --data-binary @- \
+              "$API_URL/api/projects/$PROJECT_ID/graph/progress" || true
+          SH
+          bash "$RUNNER_TEMP/progress.sh" started "분석 서버 준비"
+
       - uses: actions/checkout@v4
         with:
           sparse-checkout: gitnexus
@@ -68,7 +82,11 @@ jobs:
         id: target
         run: |
           git clone --quiet --depth 1 --no-tags --branch "$BRANCH" "https://github.com/$REPO.git" "$RUNNER_TEMP/target"
-          echo "sha=$(git -C "$RUNNER_TEMP/target" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          sha=$(git -C "$RUNNER_TEMP/target" rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          files=$(git -C "$RUNNER_TEMP/target" ls-files | wc -l)
+          bash "$RUNNER_TEMP/progress.sh" cloned "레포 받기 완료" "{\"files\": $files, \"sha\": \"$sha\"}"
+          bash "$RUNNER_TEMP/progress.sh" indexing "GitNexus 로 코드 인덱싱 중"
 
       - name: 그래프 만들기
         env:
@@ -79,6 +97,8 @@ jobs:
         run: |
           set -o pipefail
           node gitnexus/export.mjs "$RUNNER_TEMP/target" "$RUNNER_TEMP/graph.json" 400 2>&1 | tee "$RUNNER_TEMP/export.log"
+          bash "$RUNNER_TEMP/progress.sh" indexed "인덱싱 완료" \
+            "$(jq -c '{files: .stats.shownFiles, functions: (.functions | length), calls: (.calls | length), communities: (.communities | length), ms: .stats.analyzeMs}' "$RUNNER_TEMP/graph.json")"
 
       - name: 결과 보내기
         # 취소(새 실행에 밀림)면 보내지 않는다. 보내면 새 실행 상태를 실패로 덮는다

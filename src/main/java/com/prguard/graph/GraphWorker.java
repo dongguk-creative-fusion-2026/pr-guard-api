@@ -83,12 +83,14 @@ public class GraphWorker {
             }
             throw e;
         }
+        graphs.appendProgress(project.id(), "dispatched", "GitHub Actions 에 분석 요청", null);
         log.info("레포 그래프 워크플로 실행 {} ({})", project.ref().fullName(), branch);
     }
 
     private void buildLocally(Project project, GitHubRepo repo) {
         long started = System.currentTimeMillis();
         Snapshot snapshot = workspace.checkoutBranch(project.ref(), repo.size(), repo.defaultBranch());
+        graphs.appendProgress(project.id(), "cloned", "레포 받기 완료", null);
         try {
             graphs.markDone(project.id(), snapshot.sha(), builder.build(snapshot.dir()));
             log.info("레포 그래프 완료 {} {} {}ms", project.ref().fullName(), snapshot.sha().substring(0, 7),

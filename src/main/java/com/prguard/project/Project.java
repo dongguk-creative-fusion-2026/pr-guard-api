@@ -12,7 +12,10 @@ public record Project(
         int openPullCount,
         OffsetDateTime lastPolledAt,
         String lastPollError,
-        OffsetDateTime createdAt) {
+        OffsetDateTime createdAt,
+        boolean commentEnabled,
+        Integer majorThreshold,
+        OffsetDateTime onboardedAt) {
 
     public RepoRef ref() {
         return new RepoRef(owner, name);

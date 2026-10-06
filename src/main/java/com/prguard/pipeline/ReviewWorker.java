@@ -116,7 +116,7 @@ public class ReviewWorker {
                             "hasBody", pull.body() != null && !pull.body().isBlank(),
                             "ms", System.currentTimeMillis() - collectStarted));
 
-            AnalysisResult result = pipeline.run(pull, files, repoKb, sink);
+            AnalysisResult result = pipeline.run(pull, files, repoKb, sink, project.majorThreshold());
             String comment = renderer.render(review.headSha(), files, result,
                     links.reviewUrl(project.id(), review.id()));
 
@@ -124,7 +124,7 @@ public class ReviewWorker {
             long publishStarted = System.currentTimeMillis();
             String url = null;
             int inline = 0;
-            if (github.canWrite()) {
+            if (github.canWrite() && project.commentEnabled()) {
                 sink.running(Stage.PUBLISH, "요약 · 라인 코멘트");
                 url = publisher.publishSummary(repo, pr, comment).orElse(null);
                 inline = publisher.publishInline(repo, pr, review.headSha(), result.findings(), files);
@@ -133,7 +133,7 @@ public class ReviewWorker {
                         "inline", inline,
                         "ms", System.currentTimeMillis() - publishStarted));
             } else {
-                sink.skipped(Stage.PUBLISH, "코멘트 꺼짐 (dry-run)");
+                sink.skipped(Stage.PUBLISH, project.commentEnabled() ? "코멘트 꺼짐 (dry-run)" : "프로젝트 설정에서 코멘트 꺼짐");
             }
 
             reviews.markDone(review.id(), result.verdict(), result.reviewer(), result.summary(), comment,

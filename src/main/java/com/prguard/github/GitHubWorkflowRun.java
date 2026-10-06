@@ -13,5 +13,5 @@ import com.fasterxml.jackson.databind.annotation.JsonNaming;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-public record GitHubWorkflowRun(long id, String path, String event, String displayTitle, String status) {
+public record GitHubWorkflowRun(long id, String path, String event, String displayTitle, String status, String htmlUrl) {
 }
