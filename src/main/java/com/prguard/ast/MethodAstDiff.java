@@ -45,7 +45,7 @@ public record MethodAstDiff(
     }
 
     /**
-     * @param kind THROW_TO_NULL · EXCEPTION_REMOVED · NULL_CHECK_REMOVED · AUTH_REMOVED · EXCEPTION_SWALLOWED · CONDITION_CHANGED
+     * @param kind THROW_TO_NULL · EXCEPTION_REMOVED · NULL_CHECK_REMOVED · AUTH_REMOVED · EXCEPTION_SWALLOWED · CONDITION_CHANGED · CALL_TARGET_CHANGED
      * @param line head 라인 (head 에 없으면 base 라인, 음수)
      */
     public record Signal(String kind, int line, String detail) {

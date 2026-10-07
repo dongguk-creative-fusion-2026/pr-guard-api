@@ -40,6 +40,8 @@ public final class AstDiffer {
     private static final int MAX_SOURCE_LINES = 80;
     private static final int MAX_TEXT = 90;
     private static final Set<String> AUTH_ANNOTATIONS = Set.of("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed");
+    /** 이름만 바뀐 것으로 볼 자리: 지역 변수 · 파라미터 · 그 이름을 쓰는 곳. 호출하는 메서드 · 타입 이름이 바뀌면 동작이 바뀐다 */
+    private static final Set<String> RENAMEABLE = Set.of("VariableDeclarator", "Parameter", "NameExpr");
     private static final Set<String> ANNOTATION_TYPES = Set.of("MarkerAnnotationExpr", "SingleMemberAnnotationExpr",
             "NormalAnnotationExpr");
 
@@ -123,8 +125,13 @@ public final class AstDiffer {
             if (edits.size() < MAX_EDITS) {
                 edits.add(new Edit(kind, type, node.getLabel(), newLabel, baseLine, headLine, text));
             }
-            if (kind == Edit.Action.UPDATE && "SimpleName".equals(type)) {
+            if (kind == Edit.Action.UPDATE && "SimpleName".equals(type) && node.getParent() != null
+                    && RENAMEABLE.contains(node.getParent().getType().name)) {
                 renameOnly++;
+            }
+            if (kind == Edit.Action.UPDATE && "SimpleName".equals(type) && node.getParent() != null
+                    && "MethodCallExpr".equals(node.getParent().getType().name)) {
+                signals.add(new Signal("CALL_TARGET_CHANGED", headLine, node.getLabel() + "() → " + newLabel + "()"));
             }
             if (kind == Edit.Action.MOVE) {
                 moves++;
