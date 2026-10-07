@@ -359,10 +359,11 @@ export function extractInfra(repoDir, codeFiles, routes) {
     }
   }
 
+  const uniqueCode = [...new Map(codeLinks.map((c) => [`${c.node}|${c.file}`, c])).values()];
   return {
     nodes: [...nodes.values()].map(({ dir: _dir, published: _p, volumes: _v, ...n }) => n),
     links,
-    codeLinks,
+    codeLinks: uniqueCode,
     files: [...new Set([...nodes.values()].flatMap((n) => n.sources.map((s) => s.file)))].sort(),
   };
 
