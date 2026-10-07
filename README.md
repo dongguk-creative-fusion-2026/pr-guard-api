@@ -1,6 +1,8 @@
 # pr-guard-api
 
-PR Guard 백엔드. 등록된 public GitHub 레포의 열린 PR 을 주기적으로 조회하고, 새 커밋이 보이면 **diff · 레포 전체 · git 이력 · PR 설명**을 함께 분석해 PR 에 리뷰를 남긴다.
+PR Guard 백엔드. AI 네이티브 개발 환경에서 **속도는 그대로 두고 코드 품질을 지키는 PR 검증 계층**이다.
+
+등록된 public GitHub 레포의 열린 PR 을 주기적으로 조회하고, 새 커밋이 보이면 **diff · 레포 전체 · git 이력 · PR 설명**을 함께 분석하고, 켜져 있으면 **base · head 에서 테스트를 실제로 돌려** 근거를 만든 뒤 판정해 PR 에 리뷰를 남긴다. LLM 의 말만 믿지 않는다: 근거는 정적 분석 · 이력 통계 · 실행 결과로 만들고, 판정은 규칙이 계산한다.
 
 - 프론트엔드: [pr-guard-web](https://github.com/dongguk-creative-fusion-2026/pr-guard-web)
 - 테스트·평가용 레포: [pr-guard-sandbox](https://github.com/dongguk-creative-fusion-2026/pr-guard-sandbox)
@@ -29,6 +31,11 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   ├ GitHistoryLoader 최근 커밋 이력 · 동시 변경 통계 · 바뀐 라인의 blame
   │   ├ Analyzer 들     결정적 검사 (base 에도 있던 문제는 제외)
   │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달)
+  │   ├ TestRunService  실행 검증 (EXEC_RUNNER 가 켜져 있으면, 소스 준비 직후 나란히 시작)
+  │   │   ├ 쿠버네티스 Job 으로 base · head 러너(runner/) 기동 → clone · 빌드 · 테스트 → JUnit 결과 콜백
+  │   │   ├ EvidenceService  본문만 바뀐 메서드마다 "base 통과 · head 실패" 증거 테스트 생성 → 러너가 받아 함께 실행
+  │   │   ├ trace-agent      테스트 중 실제 호출 기록 (호출 횟수 · 간선 · 테스트별로 지나간 함수)
+  │   │   └ 비교: 회귀(BLOCKER) · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화(MAJOR) · 테스트가 안 지나간 변경(MINOR)
   │   └ VerdictPolicy   판정 계산 (BLOCKER ≥1 → 머지 비권장, MAJOR ≥1 → 수정 후 머지)
   ├ 저장: findings, 판정, 분석 재료 요약(context)
   └ PR: 요약 코멘트 1개(계속 수정) + 라인 코멘트(같은 지적은 한 번만)
@@ -43,7 +50,8 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | `github` | GitHub REST 클라이언트, 레포 URL 파싱 |
 | `project` / `pull` | 프로젝트 등록, PR 상태 저장 |
 | `workspace` | 레포 clone, PR 별 base/head worktree, 그래프용 브랜치 worktree, git 실행 |
-| `execution` | 실행 검증: base · head 에서 테스트를 실제로 돌려 회귀 찾기 (쿠버네티스 Job · 로컬 docker), 러너 콜백. `deploy/k8s/README.md` |
+| `execution` | 실행 검증: base · head 에서 테스트를 실제로 돌려 회귀 찾기 (쿠버네티스 Job · 로컬 docker), 러너 콜백, 증거 테스트 판정(`EvidenceVerdict`), 호출 기록 병합(`Trace`). `deploy/k8s/README.md` |
+| `evidence` | 증거 테스트 생성: 바뀐 메서드 고르기, OpenAI(JSON 스키마) 또는 픽스처 생성기. 프롬프트는 `resources/prompts/evidence-system.md` |
 | `graph` | 레포 전체 파일 의존성 그래프: 대기열 처리·워크플로 실행(`GraphWorker`), 결과 받기(`GraphController`), 로컬 실행(`GraphBuilder`) |
 | `index` | Java 레포 인덱스 (`JavaIndexer`, `RepoIndex`), base↔head 메서드 비교 (`MethodDiff`) |
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
@@ -90,6 +98,11 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | POST | `/api/projects/{id}/onboarded` | 등록 화면(온보딩)을 끝냄 |
 | POST | `/api/projects/{id}/graph/progress` | 그래프 워크플로가 진행 단계를 알린다 (`{runId, stage, message, data}`) |
 | POST | `/api/projects/{id}/graph/result` | 그래프 워크플로가 결과를 보낸다 (`{runId, commitSha, graph}` 또는 `{runId, error}`) |
+| GET | `/api/reviews/{id}/test-runs` | 리뷰의 실행 검증 기록 (base · head) |
+| GET | `/api/reviews/{id}/runtime` | 리뷰의 런타임 호출 기록 `{base, head}` |
+| GET | `/api/projects/{id}/runtime` | 프로젝트의 가장 최근 head 호출 기록 (코드 그래프 · 시티 오버레이). 없으면 204 |
+| GET | `/api/test-runs/{id}/extra-files` | 러너 전용 (`X-Run-Token`). 증거 테스트: 200 파일 · 202 만드는 중 · 204 없음 |
+| POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
 오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502)
 
@@ -118,6 +131,8 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | `WORKSPACE_DIR` | `{tmp}/prguard` | clone·worktree 위치 |
 | `WORKSPACE_MAX_REPO_KB` | `300000` | 이보다 큰 레포는 clone 하지 않고 diff 만 분석 |
 | `EXEC_RUNNER` | `none` | 실행 검증. `kubernetes` · `docker` 면 켜진다 (설정은 `deploy/k8s/README.md`) |
+| `EVIDENCE_ENABLED` | `true` | 실행 검증이 켜져 있을 때 증거 테스트를 만들지 (`OPENAI_API_KEY` 필요) |
+| `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
 | `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
 | `GRAPH_DISPATCH_TOKEN` | (`GITHUB_TOKEN`) | pr-guard-api 레포에 Actions 쓰기 권한이 있는 토큰. 워크플로 실행에 쓴다 |
 | `GRAPH_NODE` | `node` | local: node (22.18+ 또는 24.11+) |
