@@ -58,6 +58,12 @@ prguard:
     memory: ${EXEC_MEMORY:3Gi}
     timeout: ${EXEC_TIMEOUT:PT15M}
     poll-interval: PT2S
+  evidence:
+    # 증거 테스트: 바뀐 메서드마다 base 통과 · head 실패하는 테스트를 LLM 으로 써서 함께 돌린다 (OPENAI_API_KEY 필요)
+    enabled: ${EVIDENCE_ENABLED:true}
+    # 있으면 LLM 대신 {dir}/{owner}/{repo}/{PR 번호}/ 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연)
+    fixture-dir: ${EVIDENCE_FIXTURE_DIR:}
+    max-targets: 3
   graph:
     # 레포 전체 파일 의존성 그래프 (GitNexus).
     # ACTIONS: 이 레포의 .github/workflows/repo-graph.yml 을 실행하고 결과를 /api/projects/{id}/graph/result 로 받는다

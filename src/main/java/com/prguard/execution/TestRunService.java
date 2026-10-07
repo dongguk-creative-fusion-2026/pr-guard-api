@@ -7,6 +7,8 @@ import com.prguard.analysis.Category;
 import com.prguard.analysis.Finding;
 import com.prguard.analysis.PullInfo;
 import com.prguard.analysis.Severity;
+import com.prguard.evidence.EvidencePlan;
+import com.prguard.evidence.EvidenceTest;
 import com.prguard.events.EventSink;
 import com.prguard.events.Stage;
 import com.prguard.execution.JUnitReportParser.TestCase;
@@ -24,6 +26,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -33,6 +38,7 @@ import org.springframework.stereotype.Service;
  *
  * 화면의 실행 검증 레인 단계마다 진행을 알린다:
  * 실행 준비(EXEC_PREPARE) → Pod 기동(EXEC_POD_*) → 빌드 · 테스트(EXEC_TEST_*) → 차등 비교(EXEC_DIFF).
+ * 증거 테스트(EXEC_EVIDENCE)는 분석 쪽에서 만들어 넘기고, 러너는 clone 뒤 그것을 받아 레포 테스트와 함께 돌린다.
  * 러너는 진행과 결과를 {@link TestRunController} 로 보내고, 여기서는 그 기록과 러너(Pod) 상태를 주기적으로 읽는다.
  */
 @Service
@@ -40,7 +46,7 @@ public class TestRunService {
 
     private static final Logger log = LoggerFactory.getLogger(TestRunService.class);
     static final List<Stage> STAGES = List.of(Stage.EXEC_PREPARE, Stage.EXEC_POD_BASE, Stage.EXEC_POD_HEAD,
-            Stage.EXEC_TEST_BASE, Stage.EXEC_TEST_HEAD, Stage.EXEC_DIFF);
+            Stage.EXEC_TEST_BASE, Stage.EXEC_TEST_HEAD, Stage.EXEC_DIFF, Stage.EXEC_EVIDENCE);
     /** 러너(Pod)가 끝났는데 결과가 안 오면 이만큼 기다린 뒤 실패로 본다 */
     private static final long REPORT_GRACE_MS = 30_000;
     private static final int MAX_LISTED = 20;
@@ -83,6 +89,12 @@ public class TestRunService {
 
     /** base · head 에서 테스트를 돌리고 비교해 지적을 돌려준다. 끝날 때까지 기다린다. */
     public List<Finding> verify(Long reviewId, PullInfo pull, Checkout checkout, EventSink sink) {
+        return verify(reviewId, pull, checkout, sink, CompletableFuture.completedFuture(EvidencePlan.EMPTY));
+    }
+
+    /** @param plan 증거 테스트와 바뀐 메서드. 러너가 뜬 뒤에 채워진다 */
+    public List<Finding> verify(Long reviewId, PullInfo pull, Checkout checkout, EventSink sink,
+                                CompletableFuture<EvidencePlan> plan) {
         if (!enabled()) {
             skipAll(sink, "실행 환경 준비 중");
             return List.of();
@@ -103,6 +115,13 @@ public class TestRunService {
                 runs.started(s.runId, s.runnerName);
                 s.startedAt = System.currentTimeMillis();
             }
+            // 러너는 clone 뒤 증거 테스트가 준비될 때까지 기다린다 (extra-files 202)
+            plan.whenComplete((p, err) -> {
+                List<EvidenceTest> tests = p == null ? List.of() : p.tests();
+                for (Side s : sides) {
+                    runs.setExtra(s.runId, tests.isEmpty() ? "NONE" : "READY", tests.isEmpty() ? null : json(tests));
+                }
+            });
             sink.done(Stage.EXEC_PREPARE, props.runner() == ExecutionProperties.Runner.KUBERNETES
                     ? "Job 2개 (" + props.namespace() + ")" : "컨테이너 2개", data(
                     "runner", props.runner().name(),
@@ -111,7 +130,7 @@ public class TestRunService {
                     "head", head.runnerName,
                     "ms", System.currentTimeMillis() - prepareStarted));
             watch(sides, sink);
-            return compare(base, head, sink);
+            return compare(base, head, sink, planOf(plan));
         } catch (RuntimeException e) {
             String reason = describe(e);
             log.warn("실행 검증 실패: {}", reason, e);
@@ -225,8 +244,12 @@ public class TestRunService {
         }
     }
 
-    /** base 에서 통과하던 테스트가 head 에서 실패하면 BLOCKER, 새로 추가된 테스트가 실패하면 MAJOR. */
-    private List<Finding> compare(Side base, Side head, EventSink sink) {
+    /**
+     * base 에서 통과하던 테스트가 head 에서 실패하면 BLOCKER, 새로 추가된 테스트가 실패하면 MAJOR.
+     * 증거 테스트는 따로 판정한다: base 통과 · head 실패면 PR 이 그 동작을 바꿨다는 증거라 MAJOR.
+     * head 호출 기록이 있으면 바뀐 메서드마다 지나간 테스트를 찾고, 하나도 없으면 MINOR.
+     */
+    private List<Finding> compare(Side base, Side head, EventSink sink, EvidencePlan plan) {
         if (base.result == null || !"DONE".equals(base.result.status())) {
             sink.skipped(Stage.EXEC_DIFF, "base 실행이 끝나지 않아 비교하지 않음");
             return List.of();
@@ -240,7 +263,9 @@ public class TestRunService {
                     "base 커밋에서는 빌드와 테스트가 돌았지만 이 PR 의 head 커밋에서는 실패했습니다: " + reason,
                     head.result == null ? null : head.result.logTail(), "head-build", Finding.TOOL));
         }
-        TestDiff diff = TestDiff.compare(cases(base.result), cases(head.result));
+        List<TestCase> baseCases = cases(base.result);
+        List<TestCase> headCases = cases(head.result);
+        TestDiff diff = TestDiff.compare(repoTests(baseCases), repoTests(headCases));
         List<Finding> findings = new ArrayList<>();
         for (TestCase t : diff.regressions()) {
             findings.add(new Finding("EXEC_TEST_REGRESSION", Category.IMPACT, Severity.BLOCKER, null, null,
@@ -252,13 +277,83 @@ public class TestRunService {
                     "새로 추가된 테스트가 실패: " + shortName(t.name()),
                     "이 PR 에서 생긴 테스트 " + t.name() + " 가 head 에서 실패합니다.", t.message(), t.name(), Finding.TOOL));
         }
-        sink.done(Stage.EXEC_DIFF, diff.regressions().isEmpty() && diff.newFailures().isEmpty()
-                ? "회귀 없음" : "회귀 " + diff.regressions().size() + " · 새 실패 " + diff.newFailures().size(), data(
+
+        List<EvidenceVerdict> evidence = EvidenceVerdict.judge(plan.tests(), baseCases, headCases,
+                base.result.evidenceDropped(), head.result.evidenceDropped());
+        for (EvidenceVerdict v : evidence) {
+            if (v.kind() == EvidenceVerdict.Kind.PROVEN) {
+                EvidenceTest t = v.test();
+                findings.add(new Finding("EXEC_BEHAVIOR_CHANGE", Category.IMPACT, Severity.MAJOR, file(plan, t.target()),
+                        null, "실행으로 증명된 동작 변화: " + shortName(t.target()),
+                        (t.intent().isBlank() ? "" : t.intent() + " — ")
+                                + "base 에서 통과하는 테스트가 head 에서 실패합니다. 의도한 변경이면 호출하는 쪽과 기존 테스트도 맞춰 주세요.",
+                        // 테스트 코드는 파이프라인 상세(EXEC_EVIDENCE · EXEC_DIFF)에서 보여 주고 근거에는 실패 내용만 남긴다
+                        "증거 테스트 " + shortName(t.className()) + " 의 head 실패: "
+                                + (v.headMessage() == null ? "" : v.headMessage()),
+                        "evidence:" + t.target(), Finding.TOOL));
+            }
+        }
+
+        Trace headTrace = Trace.fromJson(runs.trace(head.runId), mapper);
+        List<Map<String, Object>> coverage = new ArrayList<>();
+        List<String> untested = new ArrayList<>();
+        for (EvidencePlan.Target c : plan.changed()) {
+            List<String> tests = headTrace.testsReaching(c.traced()).stream()
+                    .filter(name -> !EvidenceTest.isEvidence(name)).toList();
+            coverage.add(data("id", c.id(), "kind", c.kind(), "file", c.file(), "calls", headTrace.callsOf(c.traced()),
+                    "tests", tests.stream().limit(MAX_LISTED).toList(), "testCount", tests.size()));
+            if (tests.isEmpty() && !headTrace.isEmpty()) {
+                untested.add(c.id());
+            }
+        }
+        if (!untested.isEmpty()) {
+            findings.add(new Finding("EXEC_UNTESTED_CHANGE", Category.IMPACT, Severity.MINOR, null, null,
+                    "테스트가 한 번도 지나가지 않은 변경 " + untested.size() + "곳",
+                    "head 에서 레포 테스트를 돌리는 동안 이 메서드들은 한 번도 실행되지 않았습니다. 이 변경은 테스트로 지켜지지 않습니다.",
+                    String.join("\n", untested.stream().limit(MAX_LISTED).toList()), "untested", Finding.TOOL));
+        }
+
+        long proven = evidence.stream().filter(v -> v.kind() == EvidenceVerdict.Kind.PROVEN).count();
+        String summary = diff.regressions().isEmpty() && diff.newFailures().isEmpty()
+                ? "회귀 없음" : "회귀 " + diff.regressions().size() + " · 새 실패 " + diff.newFailures().size();
+        sink.done(Stage.EXEC_DIFF, proven > 0 ? summary + " · 동작 변화 " + proven : summary, data(
                 "regressions", names(diff.regressions()),
                 "newFailures", names(diff.newFailures()),
                 "fixed", names(diff.fixed()),
-                "stillFailing", diff.stillFailing().size()));
+                "stillFailing", diff.stillFailing().size(),
+                "evidence", evidence.stream().map(EvidenceVerdict::view).toList(),
+                "coverage", coverage,
+                "traced", !headTrace.isEmpty()));
         return findings;
+    }
+
+    private static List<TestCase> repoTests(List<TestCase> cases) {
+        return cases.stream().filter(c -> !EvidenceTest.isEvidence(c.name())).toList();
+    }
+
+    private static String file(EvidencePlan plan, String methodId) {
+        return plan.changed().stream().filter(c -> c.id().equals(methodId)).map(EvidencePlan.Target::file)
+                .findFirst().orElse(null);
+    }
+
+    /** 러너가 끝났으면 증거 테스트는 이미 넘겨졌다. 그래도 생성이 늦으면 오래 기다리지 않는다 */
+    private static EvidencePlan planOf(CompletableFuture<EvidencePlan> plan) {
+        try {
+            return plan.get(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return EvidencePlan.EMPTY;
+        } catch (java.util.concurrent.ExecutionException | TimeoutException e) {
+            return EvidencePlan.EMPTY;
+        }
+    }
+
+    private String json(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            return null;
+        }
     }
 
     private List<TestCase> cases(TestRun run) {

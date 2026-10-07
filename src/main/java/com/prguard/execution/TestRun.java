@@ -11,6 +11,8 @@ import java.time.OffsetDateTime;
  * @param runnerName 쿠버네티스 Job 또는 docker 컨테이너 이름
  * @param phase      러너가 알린 진행 단계 (cloning, building …)
  * @param results    테스트 케이스별 결과 [{name, status, message}]
+ * @param extraState 증거 테스트 PENDING | READY | NONE
+ * @param evidenceDropped 증거 테스트가 컴파일되지 않아 빼고 돌렸으면 그 이유
  */
 public record TestRun(
         long id,
@@ -31,7 +33,9 @@ public record TestRun(
         String logTail,
         String error,
         OffsetDateTime createdAt,
-        OffsetDateTime finishedAt) {
+        OffsetDateTime finishedAt,
+        String extraState,
+        String evidenceDropped) {
 
     public boolean finished() {
         return "DONE".equals(status) || "FAILED".equals(status);

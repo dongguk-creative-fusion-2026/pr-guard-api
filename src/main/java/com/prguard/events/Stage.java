@@ -10,6 +10,7 @@ package com.prguard.events;
  * 실행 검증 레인 (CHECKOUT 뒤에서 나란히 돌고 VERDICT 에 합류):
  *   EXEC_PREPARE → EXEC_POD_BASE → EXEC_TEST_BASE ┐
  *               → EXEC_POD_HEAD → EXEC_TEST_HEAD ┴→ EXEC_DIFF → VERDICT
+ *   METHOD_DIFF → EXEC_EVIDENCE → EXEC_TEST_BASE · EXEC_TEST_HEAD (증거 테스트를 함께 돌린다)
  * </pre>
  */
 public enum Stage {
@@ -33,6 +34,8 @@ public enum Stage {
     /** base · head Pod(컨테이너) 스케줄 · 이미지 받기 · 기동 */
     EXEC_POD_BASE,
     EXEC_POD_HEAD,
+    /** 바뀐 동작을 base 통과 · head 실패로 증명할 테스트 만들기 */
+    EXEC_EVIDENCE,
     /** base · head 에서 clone → 빌드 → 테스트 */
     EXEC_TEST_BASE,
     EXEC_TEST_HEAD,
