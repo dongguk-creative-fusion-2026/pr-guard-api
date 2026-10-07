@@ -131,4 +131,23 @@ class AstDifferTest {
 
         assertThat(d.values().iterator().next().signals()).extracting(Signal::kind).contains("AUTH_REMOVED");
     }
+
+    @Test
+    void changedCallTarget_isLogicNotRename() throws Exception {
+        Map<String, MethodAstDiff> d = diff(
+                service("""
+                            java.util.List<Post> find(String name) {
+                                return posts.findByLastName(name);
+                            }
+                        """),
+                service("""
+                            java.util.List<Post> find(String name) {
+                                return posts.findByLastNameIgnoreCase(name);
+                            }
+                        """));
+
+        MethodAstDiff m = d.values().iterator().next();
+        assertThat(m.shape()).isEqualTo(Shape.LOGIC);
+        assertThat(m.signals()).extracting(Signal::kind).contains("CALL_TARGET_CHANGED");
+    }
 }
