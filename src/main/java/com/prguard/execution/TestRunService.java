@@ -9,6 +9,7 @@ import com.prguard.analysis.PullInfo;
 import com.prguard.analysis.Severity;
 import com.prguard.evidence.EvidencePlan;
 import com.prguard.evidence.EvidenceTest;
+import com.prguard.evidence.ProbeHelper;
 import com.prguard.events.EventSink;
 import com.prguard.events.Stage;
 import com.prguard.execution.JUnitReportParser.TestCase;
@@ -21,11 +22,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -117,7 +120,9 @@ public class TestRunService {
             }
             // 러너는 clone 뒤 증거 테스트가 준비될 때까지 기다린다 (extra-files 202)
             plan.whenComplete((p, err) -> {
-                List<EvidenceTest> tests = p == null ? List.of() : p.tests();
+                List<EvidenceTest> tests = new ArrayList<>(p == null ? List.of() : p.tests());
+                // 관측 테스트가 쓰는 기록기를 같은 패키지에 함께 넣는다
+                tests.addAll(ProbeHelper.filesFor(tests));
                 for (Side s : sides) {
                     runs.setExtra(s.runId, tests.isEmpty() ? "NONE" : "READY", tests.isEmpty() ? null : json(tests));
                 }
@@ -294,6 +299,24 @@ public class TestRunService {
             }
         }
 
+        // 동작 diff: 관측 테스트가 입력별로 남긴 결과를 base · head 로 맞댄다
+        List<BehaviorDiff.Row> behavior = BehaviorDiff.compare(plan.tests(), BehaviorDiff.fromJson(runs.probe(base.runId), mapper),
+                BehaviorDiff.fromJson(runs.probe(head.runId), mapper));
+        Set<String> provenTargets = new HashSet<>();
+        evidence.stream().filter(v -> v.kind() == EvidenceVerdict.Kind.PROVEN).forEach(v -> provenTargets.add(v.test().target()));
+        for (Map.Entry<String, List<BehaviorDiff.Row>> e : BehaviorDiff.changedByTarget(behavior).entrySet()) {
+            // 증거 테스트가 이미 증명한 메서드는 같은 지적을 두 번 남기지 않는다
+            if (provenTargets.contains(e.getKey())) {
+                continue;
+            }
+            findings.add(new Finding("EXEC_BEHAVIOR_DIFF", Category.IMPACT, Severity.MAJOR, file(plan, e.getKey()), null,
+                    "실행으로 확인된 동작 차이: " + shortName(e.getKey()),
+                    "같은 입력으로 base 와 head 를 돌렸더니 결과가 " + e.getValue().size() + "곳에서 달라졌습니다. 의도한 변경이면 PR 본문에 적고 호출하는 쪽을 확인해 주세요.",
+                    String.join("\n", e.getValue().stream().limit(MAX_LISTED)
+                            .map(r -> r.label() + ": " + r.base() + " → " + r.head()).toList()),
+                    "behavior:" + e.getKey(), Finding.TOOL));
+        }
+
         Trace headTrace = Trace.fromJson(runs.trace(head.runId), mapper);
         List<Map<String, Object>> coverage = new ArrayList<>();
         List<String> untested = new ArrayList<>();
@@ -316,13 +339,21 @@ public class TestRunService {
         long proven = evidence.stream().filter(v -> v.kind() == EvidenceVerdict.Kind.PROVEN).count();
         String summary = diff.regressions().isEmpty() && diff.newFailures().isEmpty()
                 ? "회귀 없음" : "회귀 " + diff.regressions().size() + " · 새 실패 " + diff.newFailures().size();
-        sink.done(Stage.EXEC_DIFF, proven > 0 ? summary + " · 동작 변화 " + proven : summary, data(
+        long differing = behavior.stream().filter(BehaviorDiff.Row::changed).count();
+        if (proven > 0) {
+            summary += " · 동작 변화 " + proven;
+        }
+        if (differing > 0) {
+            summary += " · 결과 차이 " + differing;
+        }
+        sink.done(Stage.EXEC_DIFF, summary, data(
                 "regressions", names(diff.regressions()),
                 "newFailures", names(diff.newFailures()),
                 "fixed", names(diff.fixed()),
                 "stillFailing", diff.stillFailing().size(),
                 "evidence", evidence.stream().map(EvidenceVerdict::view).toList(),
                 "coverage", coverage,
+                "behavior", behavior,
                 "traced", !headTrace.isEmpty()));
         return findings;
     }

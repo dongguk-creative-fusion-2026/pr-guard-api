@@ -24,8 +24,17 @@ public class OpenAiEvidenceGenerator implements EvidenceGenerator {
     static final Map<String, Object> SCHEMA = Map.of(
             "type", "object",
             "additionalProperties", false,
-            "required", List.of("tests"),
+            "required", List.of("tests", "probes"),
             "properties", Map.of(
+                    "probes", Map.of(
+                            "type", "array",
+                            "items", Map.of(
+                                    "type", "object",
+                                    "additionalProperties", false,
+                                    "required", List.of("target", "code"),
+                                    "properties", Map.of(
+                                            "target", Map.of("type", "string"),
+                                            "code", Map.of("type", "string")))),
                     "tests", Map.of(
                             "type", "array",
                             "items", Map.of(
@@ -94,7 +103,8 @@ public class OpenAiEvidenceGenerator implements EvidenceGenerator {
         for (EvidenceRequest.Target t : r.targets()) {
             sb.append("\n# 바뀐 메서드: ").append(t.methodId()).append('\n');
             sb.append("파일: ").append(t.file()).append('\n');
-            sb.append("만들 테스트 클래스: ").append(t.className()).append('\n');
+            sb.append("만들 증거 테스트 클래스: ").append(t.className()).append('\n');
+            sb.append("만들 관측 테스트 클래스: ").append(EvidenceTest.probeName(t.className())).append('\n');
             sb.append("테스트 라이브러리: ").append(String.join(", ", t.testLibraries())).append('\n');
             sb.append("\n## base (바뀌기 전)\n```java\n").append(t.baseSource()).append("\n```\n");
             sb.append("\n## head (바뀐 뒤)\n```java\n").append(t.headSource()).append("\n```\n");
@@ -120,6 +130,16 @@ public class OpenAiEvidenceGenerator implements EvidenceGenerator {
                         .filter(t -> declares(code, t.className()))
                         .ifPresent(t -> tests.add(new EvidenceTest(t.testPath(), t.className(), target,
                                 node.path("intent").asText(""), code)));
+            }
+            for (JsonNode node : root.path("probes")) {
+                String target = node.path("target").asText();
+                String code = node.path("code").asText();
+                request.targets().stream()
+                        .filter(t -> t.methodId().equals(target))
+                        .findFirst()
+                        .filter(t -> declares(code, EvidenceTest.probeName(t.className())) && code.contains("PrGuardProbe.record("))
+                        .ifPresent(t -> tests.add(new EvidenceTest(EvidenceTest.probeName(t.testPath()),
+                                EvidenceTest.probeName(t.className()), target, "동작 관측", code)));
             }
             return tests;
         } catch (JsonProcessingException e) {

@@ -128,6 +128,7 @@ public class TestRunController {
      * @param log      빌드 출력 끝부분
      * @param trace    JVM 마다 남긴 호출 기록 (trace-*.json)
      * @param evidenceDropped 증거 테스트가 컴파일되지 않아 빼고 돌렸으면 그 이유
+     * @param probe    관측 테스트 기록 (probe.jsonl)
      */
     @PostMapping("/api/test-runs/{id}/report")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -137,9 +138,17 @@ public class TestRunController {
                        @RequestParam(value = "log", required = false) MultipartFile log,
                        @RequestParam(value = "error", required = false) String error,
                        @RequestParam(value = "trace", required = false) List<MultipartFile> trace,
-                       @RequestParam(value = "evidenceDropped", required = false) String evidenceDropped)
+                       @RequestParam(value = "evidenceDropped", required = false) String evidenceDropped,
+                       @RequestParam(value = "probe", required = false) List<MultipartFile> probe)
             throws IOException {
         authorize(id, token);
+        if (probe != null && !probe.isEmpty()) {
+            List<byte[]> parts = new ArrayList<>();
+            for (MultipartFile file : probe) {
+                parts.add(file.getBytes());
+            }
+            runs.saveProbe(id, json(BehaviorDiff.parse(parts, mapper)));
+        }
         // 결과보다 먼저 저장한다. 결과가 저장되면 비교가 바로 시작되기 때문이다
         if (trace != null && !trace.isEmpty() || evidenceDropped != null) {
             List<byte[]> parts = new ArrayList<>();
