@@ -1,7 +1,11 @@
 package com.prguard.github;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.core.ParameterizedTypeReference;
@@ -152,6 +156,103 @@ public class GitHubClient {
     public GitHubWorkflowRun getWorkflowRun(RepoRef repo, long runId) {
         return http.get().uri("/repos/{o}/{r}/actions/runs/{id}", repo.owner(), repo.name(), runId)
                 .retrieve().body(GitHubWorkflowRun.class);
+    }
+
+    /** 기본 브랜치의 파일 하나. 없으면 null */
+    public RepoFile getFile(RepoRef repo, String path) {
+        return getFile(repo, path, null);
+    }
+
+    /** @param ref 브랜치 (null 이면 기본 브랜치) */
+    public RepoFile getFile(RepoRef repo, String path, String ref) {
+        JsonNode node;
+        try {
+            node = (ref == null
+                    ? http.get().uri("/repos/{o}/{r}/contents/{path}", repo.owner(), repo.name(), path)
+                    : http.get().uri("/repos/{o}/{r}/contents/{path}?ref={ref}", repo.owner(), repo.name(), path, ref))
+                    .retrieve().body(JsonNode.class);
+        } catch (GitHubException e) {
+            if (e.status() == 404) {
+                return null;
+            }
+            throw e;
+        }
+        if (node == null || !"file".equals(node.path("type").asText())) {
+            return null;
+        }
+        String content = new String(Base64.getMimeDecoder().decode(node.path("content").asText("")), StandardCharsets.UTF_8);
+        return new RepoFile(path, node.path("sha").asText(), node.path("html_url").asText(), content);
+    }
+
+    /** 기본 브랜치 루트의 파일 · 디렉터리 이름 */
+    public List<String> listRoot(RepoRef repo) {
+        JsonNode node = http.get().uri("/repos/{o}/{r}/contents", repo.owner(), repo.name()).retrieve().body(JsonNode.class);
+        List<String> names = new ArrayList<>();
+        if (node != null) {
+            node.forEach(n -> names.add(n.path("name").asText()));
+        }
+        return names;
+    }
+
+    /** 이 서버 토큰으로 레포에 push 할 수 있는가 (브랜치 · PR 을 만들 수 있는가) */
+    public boolean canPush(RepoRef repo) {
+        if (!props.hasToken()) {
+            return false;
+        }
+        JsonNode node = http.get().uri("/repos/{o}/{r}", repo.owner(), repo.name()).retrieve().body(JsonNode.class);
+        return node != null && node.path("permissions").path("push").asBoolean(false);
+    }
+
+    /** 브랜치 끝 커밋. 없으면 null */
+    public String branchSha(RepoRef repo, String branch) {
+        try {
+            JsonNode node = http.get().uri("/repos/{o}/{r}/git/ref/heads/{b}", repo.owner(), repo.name(), branch)
+                    .retrieve().body(JsonNode.class);
+            return node == null ? null : node.path("object").path("sha").asText(null);
+        } catch (GitHubException e) {
+            if (e.status() == 404) {
+                return null;
+            }
+            throw e;
+        }
+    }
+
+    public void createBranch(RepoRef repo, String branch, String sha) {
+        http.post().uri("/repos/{o}/{r}/git/refs", repo.owner(), repo.name())
+                .body(Map.of("ref", "refs/heads/" + branch, "sha", sha))
+                .retrieve().toBodilessEntity();
+    }
+
+    /** 브랜치에 파일을 만들거나(sha 없음) 고친다(sha = 지금 파일). 커밋이 하나 생긴다 */
+    public void putFile(RepoRef repo, String branch, String path, String message, String content, String sha) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", message);
+        body.put("content", Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8)));
+        body.put("branch", branch);
+        if (sha != null) {
+            body.put("sha", sha);
+        }
+        http.put().uri("/repos/{o}/{r}/contents/{path}", repo.owner(), repo.name(), path)
+                .body(body).retrieve().toBodilessEntity();
+    }
+
+    /** PR 을 만들고 주소를 돌려준다 */
+    public String createPull(RepoRef repo, String head, String base, String title, String body) {
+        JsonNode node = http.post().uri("/repos/{o}/{r}/pulls", repo.owner(), repo.name())
+                .body(Map.of("head", head, "base", base, "title", title, "body", body))
+                .retrieve().body(JsonNode.class);
+        return node == null ? null : node.path("html_url").asText(null);
+    }
+
+    /** 이 브랜치에서 열린 PR 주소. 없으면 null */
+    public String openPullFor(RepoRef repo, String branch) {
+        JsonNode node = http.get().uri("/repos/{o}/{r}/pulls?state=open&head={h}", repo.owner(), repo.name(),
+                repo.owner() + ":" + branch).retrieve().body(JsonNode.class);
+        return node != null && node.size() > 0 ? node.get(0).path("html_url").asText(null) : null;
+    }
+
+    /** @param content 디코딩한 내용 (UTF-8) */
+    public record RepoFile(String path, String sha, String htmlUrl, String content) {
     }
 
     private record DispatchBody(String ref, Map<String, String> inputs) {
