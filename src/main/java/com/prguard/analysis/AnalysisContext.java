@@ -1,5 +1,6 @@
 package com.prguard.analysis;
 
+import com.prguard.ast.MethodAstDiff;
 import com.prguard.history.BlameLine;
 import com.prguard.history.GitHistory;
 import com.prguard.index.ChangedMethod;
@@ -10,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -28,6 +30,7 @@ public final class AnalysisContext {
     private List<ChangedMethod> changedMethods = List.of();
     private GitHistory history = GitHistory.empty();
     private List<BlameLine> blame = List.of();
+    private Map<String, MethodAstDiff> astDiffs = Map.of();
     // 검사기들이 동시에 남길 수 있다
     private final List<String> notes = Collections.synchronizedList(new ArrayList<>());
 
@@ -76,6 +79,11 @@ public final class AnalysisContext {
         return blame;
     }
 
+    /** 바뀐 메서드(head id) → AST 단위 diff. 본문 · 어노테이션이 바뀐 메서드만 */
+    public Map<String, MethodAstDiff> astDiffs() {
+        return astDiffs;
+    }
+
     public List<String> notes() {
         return notes;
     }
@@ -97,6 +105,10 @@ public final class AnalysisContext {
         this.baseIndex = base;
         this.headIndex = head;
         this.changedMethods = List.copyOf(changed);
+    }
+
+    void setAstDiffs(Map<String, MethodAstDiff> astDiffs) {
+        this.astDiffs = Map.copyOf(astDiffs);
     }
 
     void setHistory(GitHistory history, List<BlameLine> blame) {
