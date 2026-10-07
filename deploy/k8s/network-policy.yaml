@@ -1,0 +1,35 @@
+# 러너는 밖에서 들어오는 연결을 받지 않는다.
+# 나가는 연결은 DNS 와 HTTP(S)만 허용한다 (git clone, 의존성 받기, PR Guard API 콜백).
+# 클러스터 안의 다른 서비스(메타데이터 서버 등)로는 못 나가게 사설 대역을 막는다.
+# TODO: 의존성 프록시(예: Nexus)를 두면 egress 를 프록시와 GitHub, API 로만 좁힌다
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prguard-runner-egress
+  namespace: prguard-runs
+spec:
+  podSelector:
+    matchLabels:
+      app: prguard-test-run
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }

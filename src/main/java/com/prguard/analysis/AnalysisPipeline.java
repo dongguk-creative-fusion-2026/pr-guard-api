@@ -13,6 +13,7 @@ import com.prguard.review.LlmReview;
 import com.prguard.review.ReviewInput;
 import com.prguard.events.EventSink;
 import com.prguard.events.Stage;
+import com.prguard.execution.TestRunService;
 import com.prguard.review.Reviewer;
 import com.prguard.review.StatsOnlyReviewer;
 import com.prguard.workspace.Checkout;
@@ -62,10 +63,12 @@ public class AnalysisPipeline {
     private final VerdictPolicy verdictPolicy;
     private final AnalysisProperties props;
     private final Executor executor;
+    private final TestRunService testRuns;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
-                            AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor) {
+                            AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
+                            TestRunService testRuns) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -74,6 +77,7 @@ public class AnalysisPipeline {
         this.verdictPolicy = verdictPolicy;
         this.props = props;
         this.executor = executor;
+        this.testRuns = testRuns;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
@@ -86,11 +90,25 @@ public class AnalysisPipeline {
 
     /** @param majorThreshold 프로젝트의 판정 기준 (null 이면 기본값) */
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold) {
+        return run(pull, files, repoKb, sink, majorThreshold, null);
+    }
+
+    /** @param reviewId 실행 검증 기록을 묶을 리뷰 (평가 등 리뷰 없이 돌릴 때는 null) */
+    public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold,
+                              Long reviewId) {
         long started = System.currentTimeMillis();
         AnalysisContext ctx = new AnalysisContext(pull, files);
         Checkout checkout = null;
+        CompletableFuture<List<Finding>> execution = CompletableFuture.completedFuture(List.of());
         try {
             checkout = prepare(ctx, repoKb, sink);
+            // 실행 검증(base · head 테스트)은 오래 걸리고 다른 분석 결과를 쓰지 않으므로 소스가 준비되면 바로 시작한다
+            if (checkout == null) {
+                testRuns.skipAll(sink, testRuns.enabled() ? "소스가 없어 건너뜀" : "실행 환경 준비 중");
+            } else {
+                Checkout source = checkout;
+                execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink), executor);
+            }
             if (checkout != null) {
                 index(ctx, checkout, sink);
                 history(ctx, checkout, sink);
@@ -120,6 +138,7 @@ public class AnalysisPipeline {
             checks.forEach(f -> findings.addAll(f.join()));
             LlmOutcome outcome = llm.join();
             findings.addAll(outcome.findings());
+            findings.addAll(execution.join());
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
 
             Verdict verdict = verdictPolicy.decide(findings, majorThreshold);

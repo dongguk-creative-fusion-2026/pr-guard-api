@@ -1,0 +1,46 @@
+# PR Guard API 가 러너 Job 을 만들고 상태를 읽는 권한. prguard-runs 네임스페이스 안으로만 한정한다
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prguard-api
+  namespace: prguard-runs
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prguard-runner-manager
+  namespace: prguard-runs
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prguard-api-runner-manager
+  namespace: prguard-runs
+subjects:
+  - kind: ServiceAccount
+    name: prguard-api
+    namespace: prguard-runs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prguard-runner-manager
+---
+# 클러스터 밖(Railway 등)에서 API 가 접속할 때 쓰는 장기 토큰. kubeconfig 를 만들 때 쓴다 (README 참고)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prguard-api-token
+  namespace: prguard-runs
+  annotations:
+    kubernetes.io/service-account.name: prguard-api
+type: kubernetes.io/service-account-token
