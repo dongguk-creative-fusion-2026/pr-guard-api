@@ -20,6 +20,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     // 레포 인덱스: Java 소스 파싱
     implementation 'com.github.javaparser:javaparser-core:3.26.4'
+    // AST 단위 diff (삽입 · 삭제 · 수정 · 이동). LGPL-3.0, 라이브러리로만 쓴다
+    implementation 'com.github.gumtreediff:core:4.0.0-beta3'
+    implementation 'com.github.gumtreediff:gen.javaparser:4.0.0-beta3'
     // 실행 검증: 쿠버네티스 Job 으로 PR 의 테스트를 돌린다
     implementation 'io.fabric8:kubernetes-client:7.3.1'
     implementation 'org.flywaydb:flyway-core'

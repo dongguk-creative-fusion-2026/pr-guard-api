@@ -1,5 +1,7 @@
 package com.prguard.analysis;
 
+import com.prguard.ast.AstDiffer;
+import com.prguard.ast.MethodAstDiff;
 import com.prguard.history.BlameLine;
 import com.prguard.history.CoChange;
 import com.prguard.history.GitHistory;
@@ -266,6 +268,15 @@ public class AnalysisPipeline {
             sink.running(Stage.METHOD_DIFF, "메서드 비교");
             List<ChangedMethod> changed = MethodDiff.compute(baseIndex, headIndex);
             ctx.setIndexes(baseIndex, headIndex, changed);
+            // 무엇이 어떻게 바뀌었는지: AST 단위 편집과 변경 성격 · 위험 패턴
+            Map<String, MethodAstDiff> ast = Map.of();
+            try {
+                ast = AstDiffer.diff(checkout.baseDir(), checkout.headDir(), baseIndex, headIndex, changed);
+                ctx.setAstDiffs(ast);
+            } catch (RuntimeException e) {
+                log.warn("AST diff 실패: {}", e.toString());
+                ctx.note("AST diff 실패: " + e.getMessage());
+            }
             sink.done(Stage.METHOD_DIFF, "바뀐 메서드 " + changed.size() + "개", data(
                     "added", changed.stream().filter(m -> m.kind() == ChangedMethod.Kind.ADDED).count(),
                     "removed", changed.stream().filter(m -> m.kind() == ChangedMethod.Kind.REMOVED).count(),
@@ -274,6 +285,11 @@ public class AnalysisPipeline {
                     "callers", changed.stream().filter(m -> m.id() != null)
                             .mapToInt(m -> headIndex.callersOf(m.id()).size()).sum(),
                     "methods", impactViews(ctx, changed),
+                    "logic", ast.values().stream().filter(a -> a.shape() == MethodAstDiff.Shape.LOGIC).count(),
+                    "ast", ast.values().stream()
+                            .sorted(Comparator.comparing((MethodAstDiff a) -> a.signals().isEmpty())
+                                    .thenComparing(a -> a.shape() != MethodAstDiff.Shape.LOGIC))
+                            .limit(12).toList(),
                     "ms", System.currentTimeMillis() - t));
             if (headIndex.parsedFiles() == 0) {
                 ctx.note("Java 소스가 없어 레포 인덱스를 만들지 않았습니다");
