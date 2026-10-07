@@ -81,7 +81,7 @@ jobs:
       - name: 대상 레포 받기
         id: target
         run: |
-          git clone --quiet --depth 1 --no-tags --branch "$BRANCH" "https://github.com/$REPO.git" "$RUNNER_TEMP/target"
+          git clone --quiet --depth 1000 --no-tags --single-branch --branch "$BRANCH" "https://github.com/$REPO.git" "$RUNNER_TEMP/target"
           sha=$(git -C "$RUNNER_TEMP/target" rev-parse HEAD)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           files=$(git -C "$RUNNER_TEMP/target" ls-files | wc -l)
