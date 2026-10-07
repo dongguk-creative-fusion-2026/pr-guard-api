@@ -149,6 +149,10 @@ function readHistory(repoDir, files) {
 
   const stats = new Map();
   const pairs = new Map();
+  // 시간 여행용 커밋별 변경. 경로 · 작성자는 번호로 줄인다
+  const fileIndex = new Map([...files].map((path, i) => [path, i]));
+  const authorIndex = new Map();
+  const timeline = [];
   let since = null;
   let until = null;
   for (const chunk of chunks) {
@@ -158,6 +162,7 @@ function readHistory(repoDir, files) {
     until ??= time;
     since = time;
     const touched = [];
+    const changes = [];
     for (const line of lines) {
       const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
       if (!m || !files.has(m[3])) continue;
@@ -171,6 +176,11 @@ function readHistory(repoDir, files) {
       s.firstAt = time;
       stats.set(path, s);
       touched.push(path);
+      changes.push([fileIndex.get(path), m[1] === "-" ? 0 : Number(m[1]), m[2] === "-" ? 0 : Number(m[2])]);
+    }
+    if (changes.length > 0) {
+      if (!authorIndex.has(author)) authorIndex.set(author, authorIndex.size);
+      timeline.push({ at: Number(at), a: authorIndex.get(author), c: changes });
     }
     if (touched.length < 2 || touched.length > MAX_FILES_PER_COMMIT) continue;
     touched.sort();
@@ -212,6 +222,11 @@ function readHistory(repoDir, files) {
     until: until === null ? null : new Date(until).toISOString(),
     files: fileStats,
     coChanges,
+    // 오래된 커밋부터. c = [[파일 번호, 추가, 삭제]], 파일 번호는 timelineFiles, 작성자 번호는 authors
+    timelineFiles: [...files],
+    authors: [...authorIndex.keys()],
+    // git log 순서와 작성 시각이 어긋나는 커밋(리베이스 등)이 있어 시각으로 정렬한다
+    timeline: timeline.sort((x, y) => x.at - y.at),
   };
 }
 
