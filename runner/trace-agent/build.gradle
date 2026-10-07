@@ -1,0 +1,27 @@
+// 실행 검증 러너가 테스트 JVM 에 붙이는 호출 기록 에이전트 (-javaagent)
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '8.3.6'
+}
+
+repositories { mavenCentral() }
+
+java {
+    // 대상 레포가 Java 17 이어도 붙을 수 있게
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+tasks.withType(JavaCompile).configureEach { options.release = 17 }
+
+dependencies {
+    implementation 'net.bytebuddy:byte-buddy:1.17.5'
+}
+
+shadowJar {
+    archiveFileName = 'trace-agent.jar'
+    // 테스트 쪽(Mockito 등)의 ByteBuddy 와 섞이지 않게 패키지를 바꾼다
+    relocate 'net.bytebuddy', 'com.prguard.trace.shaded.bytebuddy'
+    manifest {
+        attributes('Premain-Class': 'com.prguard.trace.TraceAgent', 'Can-Retransform-Classes': 'false')
+    }
+}
