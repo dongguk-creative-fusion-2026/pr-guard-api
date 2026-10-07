@@ -12,6 +12,8 @@ import com.prguard.index.RepoIndex;
 import com.prguard.review.LlmReview;
 import com.prguard.review.ReviewInput;
 import com.prguard.events.EventSink;
+import com.prguard.evidence.EvidencePlan;
+import com.prguard.evidence.EvidenceService;
 import com.prguard.events.Stage;
 import com.prguard.execution.TestRunService;
 import com.prguard.review.Reviewer;
@@ -64,11 +66,12 @@ public class AnalysisPipeline {
     private final AnalysisProperties props;
     private final Executor executor;
     private final TestRunService testRuns;
+    private final EvidenceService evidence;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
-                            TestRunService testRuns) {
+                            TestRunService testRuns, EvidenceService evidence) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -78,6 +81,7 @@ public class AnalysisPipeline {
         this.props = props;
         this.executor = executor;
         this.testRuns = testRuns;
+        this.evidence = evidence;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
@@ -100,6 +104,9 @@ public class AnalysisPipeline {
         AnalysisContext ctx = new AnalysisContext(pull, files);
         Checkout checkout = null;
         CompletableFuture<List<Finding>> execution = CompletableFuture.completedFuture(List.of());
+        // 증거 테스트와 바뀐 메서드. 러너는 먼저 뜨고, 인덱스가 끝나면 채운다
+        CompletableFuture<EvidencePlan> plan = new CompletableFuture<>();
+        CompletableFuture<Void> planning = CompletableFuture.completedFuture(null);
         try {
             checkout = prepare(ctx, repoKb, sink);
             // 실행 검증(base · head 테스트)은 오래 걸리고 다른 분석 결과를 쓰지 않으므로 소스가 준비되면 바로 시작한다
@@ -107,10 +114,19 @@ public class AnalysisPipeline {
                 testRuns.skipAll(sink, testRuns.enabled() ? "소스가 없어 건너뜀" : "실행 환경 준비 중");
             } else {
                 Checkout source = checkout;
-                execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink), executor);
+                execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink, plan),
+                        executor);
             }
             if (checkout != null) {
                 index(ctx, checkout, sink);
+                if (testRuns.enabled()) {
+                    // LLM 으로 테스트를 쓰는 동안 이력 · 검사는 계속 진행한다
+                    planning = CompletableFuture.runAsync(() -> plan.complete(evidence.plan(ctx, sink)), executor)
+                            .exceptionally(e -> {
+                                plan.complete(EvidencePlan.EMPTY);
+                                return null;
+                            });
+                }
                 history(ctx, checkout, sink);
             } else {
                 for (Stage stage : List.of(Stage.INDEX_BASE, Stage.INDEX_HEAD, Stage.METHOD_DIFF, Stage.HISTORY)) {
@@ -139,6 +155,7 @@ public class AnalysisPipeline {
             LlmOutcome outcome = llm.join();
             findings.addAll(outcome.findings());
             findings.addAll(execution.join());
+            planning.join();
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
 
             Verdict verdict = verdictPolicy.decide(findings, majorThreshold);
@@ -151,6 +168,7 @@ public class AnalysisPipeline {
             return new AnalysisResult(findings, verdict, outcome.summary(), reviewer.name(),
                     summarize(ctx, System.currentTimeMillis() - started));
         } finally {
+            plan.complete(EvidencePlan.EMPTY);
             if (checkout != null) {
                 workspace.release(checkout);
             }

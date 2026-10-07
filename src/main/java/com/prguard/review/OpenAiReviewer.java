@@ -98,7 +98,7 @@ public class OpenAiReviewer implements Reviewer {
     }
 
     /** output[] 중 message 의 output_text 를 이어 붙인다. */
-    static String outputText(JsonNode res) {
+    public static String outputText(JsonNode res) {
         StringBuilder sb = new StringBuilder();
         if (res != null) {
             for (JsonNode item : res.path("output")) {

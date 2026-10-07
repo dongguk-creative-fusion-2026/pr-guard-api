@@ -1,5 +1,6 @@
 package com.prguard.execution;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -10,7 +11,8 @@ public class TestRunRepository {
 
     private static final String SELECT = """
             SELECT id, review_id, side, sha, status, token_hash, runner_name, phase, message, exit_code,
-                   tests, failures, errors, skipped, results::text AS results, log_tail, error, created_at, finished_at
+                   tests, failures, errors, skipped, results::text AS results, log_tail, error, created_at, finished_at,
+                   extra_state, evidence_dropped
               FROM test_runs
             """;
 
@@ -57,6 +59,54 @@ public class TestRunRepository {
                 .param("phase", phase)
                 .param("message", message)
                 .update() > 0;
+    }
+
+    /** 증거 테스트가 준비됐다 (없으면 NONE). 러너는 PENDING 동안 기다린다 */
+    public void setExtra(long id, String state, String filesJson) {
+        jdbc.sql("UPDATE test_runs SET extra_state = :state, extra_files = CAST(:files AS jsonb) WHERE id = :id")
+                .param("id", id)
+                .param("state", state)
+                .param("files", filesJson)
+                .update();
+    }
+
+    public String extraState(long id) {
+        return jdbc.sql("SELECT extra_state FROM test_runs WHERE id = :id").param("id", id).query(String.class).single();
+    }
+
+    public String extraFiles(long id) {
+        return jdbc.sql("SELECT extra_files::text FROM test_runs WHERE id = :id").param("id", id)
+                .query(String.class).optional().orElse(null);
+    }
+
+    public String trace(long id) {
+        return jdbc.sql("SELECT trace::text FROM test_runs WHERE id = :id").param("id", id)
+                .query(String.class).optional().orElse(null);
+    }
+
+    /** 프로젝트에서 호출 기록이 있는 가장 최근 head 실행 */
+    public Optional<LatestTrace> latestTrace(long projectId) {
+        return jdbc.sql("""
+                        SELECT t.id AS run_id, r.id AS review_id, r.pr_number, t.sha, t.finished_at, t.trace::text AS trace
+                          FROM test_runs t JOIN reviews r ON r.id = t.review_id
+                         WHERE r.project_id = :projectId AND t.side = 'HEAD' AND t.trace IS NOT NULL
+                         ORDER BY t.id DESC LIMIT 1
+                        """)
+                .param("projectId", projectId)
+                .query(LatestTrace.class)
+                .optional();
+    }
+
+    public record LatestTrace(long runId, long reviewId, int prNumber, String sha, OffsetDateTime finishedAt,
+                              String trace) {
+    }
+
+    public void saveTrace(long id, String traceJson, String evidenceDropped) {
+        jdbc.sql("UPDATE test_runs SET trace = CAST(:trace AS jsonb), evidence_dropped = :dropped WHERE id = :id")
+                .param("id", id)
+                .param("trace", traceJson)
+                .param("dropped", evidenceDropped)
+                .update();
     }
 
     public boolean complete(long id, int exitCode, int tests, int failures, int errors, int skipped, String resultsJson,
