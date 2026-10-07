@@ -117,7 +117,10 @@ public class AgentsMdService {
         return null;
     }
 
-    /** 초안을 새 브랜치에 커밋하고 기본 브랜치로 PR 을 연다. 이미 열린 PR 이 있으면 그 브랜치를 고친다 */
+    /**
+     * 내용을 새 브랜치에 커밋하고 기본 브랜치로 PR 을 연다. 이미 열린 PR 이 있으면 그 브랜치를 고친다.
+     * 레포에 AGENTS.md 가 이미 있으면 그 파일을 고치는 PR 이 된다 (반복된 실수 규칙 추가 등)
+     */
     public String createPull(long projectId, String content) {
         if (content == null || content.isBlank() || content.length() > MAX_CONTENT) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_AGENTS_MD", "내용이 비었거나 너무 깁니다");
@@ -129,8 +132,9 @@ public class AgentsMdService {
                 throw new ApiException(HttpStatus.FORBIDDEN, "NO_PUSH_PERMISSION",
                         "PR Guard 봇이 " + repo.fullName() + " 에 브랜치를 만들 권한이 없습니다. 내용을 복사해 직접 올려 주세요");
             }
-            if (github.getFile(repo, PATH) != null) {
-                throw new ApiException(HttpStatus.CONFLICT, "AGENTS_MD_EXISTS", "레포에 이미 AGENTS.md 가 있습니다");
+            RepoFile current = github.getFile(repo, PATH);
+            if (current != null && current.content().strip().equals(content.strip())) {
+                throw new ApiException(HttpStatus.CONFLICT, "AGENTS_MD_UNCHANGED", "레포의 AGENTS.md 와 내용이 같습니다");
             }
             String open = github.openPullFor(repo, BRANCH);
             String sha = github.branchSha(repo, BRANCH);
@@ -138,13 +142,20 @@ public class AgentsMdService {
                 String base = github.branchSha(repo, project.defaultBranch());
                 github.createBranch(repo, BRANCH, base);
             }
-            // 열린 PR 의 브랜치에 이미 파일이 있으면 고친다 (sha 필요)
-            String fileSha = sha == null ? null : existingSha(repo, BRANCH);
-            github.putFile(repo, BRANCH, PATH, "AGENTS.md 추가: AI 코딩 에이전트용 레포 규칙", content, fileSha);
+            // 브랜치에 이미 파일이 있으면(기존 파일 · 전에 올린 초안) 그 sha 로 고친다
+            String fileSha = existingSha(repo, BRANCH);
+            String title = current == null ? "AGENTS.md 추가: AI 코딩 에이전트용 레포 규칙" : "AGENTS.md 갱신: 리뷰에서 반복된 실수를 규칙으로 추가";
+            github.putFile(repo, BRANCH, PATH, title, content, fileSha);
             if (open != null) {
                 return open;
             }
-            return github.createPull(repo, BRANCH, project.defaultBranch(), "AGENTS.md 추가: AI 코딩 에이전트용 레포 규칙", """
+            if (current != null) {
+                return github.createPull(repo, BRANCH, project.defaultBranch(), title, """
+                        PR Guard 리뷰에서 여러 PR 에 걸쳐 반복된 실수를 AI 코딩 에이전트용 규칙으로 AGENTS.md 에 더합니다.
+                        규칙마다 근거가 된 PR 번호를 적어 두었습니다. 팀에 맞게 고친 뒤 머지해 주세요.
+                        """);
+            }
+            return github.createPull(repo, BRANCH, project.defaultBranch(), title, """
                     AI 코딩 에이전트(Claude Code · Codex · Cursor 등)가 이 레포에서 작업할 때 읽는 규칙 파일입니다.
 
                     PR Guard 가 레포 분석(코드 그래프 · git 이력)으로 만든 초안입니다:

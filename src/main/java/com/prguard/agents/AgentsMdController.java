@@ -1,5 +1,6 @@
 package com.prguard.agents;
 
+import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -12,9 +13,17 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentsMdController {
 
     private final AgentsMdService service;
+    private final LessonService lessons;
 
-    public AgentsMdController(AgentsMdService service) {
+    public AgentsMdController(AgentsMdService service, LessonService lessons) {
         this.service = service;
+        this.lessons = lessons;
+    }
+
+    /** 리뷰에서 반복된 실수 유형과 제안 규칙 (반복된 것 먼저) */
+    @GetMapping("/api/projects/{id}/agents-md/lessons")
+    public List<LessonService.Lesson> lessons(@PathVariable long id) {
+        return lessons.lessons(id);
     }
 
     @GetMapping("/api/projects/{id}/agents-md")
