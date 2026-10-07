@@ -17,6 +17,8 @@ const MAX_FILE_BYTES = 512 * 1024;
 /** 이미지 · 이름으로 종류를 정한다 (먼저 맞는 것) */
 const KIND_BY_IMAGE = [
   ["tunnel", /cloudflared|cloudflare\/|ngrok|tailscale/],
+  // 서비스 디스커버리 · 설정 서버 · 관리 서버 (Spring Cloud 등): 요청을 직접 받지 않는 서비스 인프라
+  ["registry", /(discovery|eureka|consul|config-server|configserver|admin-server|spring-boot-admin)/],
   ["proxy", /(^|\/)(nginx|traefik|caddy|envoy|haproxy|kong)(:|$|-)/],
   ["database", /(^|\/)(postgres|postgis|timescale|mysql|mariadb|mongo|cassandra|cockroach|mssql|oracle|neo4j|clickhouse|elasticsearch|opensearch)/],
   ["cache", /(^|\/)(redis|valkey|memcached|keydb|dragonfly)/],
@@ -93,7 +95,9 @@ export function extractInfra(repoDir, codeFiles, routes) {
     for (const [name, svc] of Object.entries(services)) {
       if (!svc || typeof svc !== "object") continue;
       const image = String(svc.image ?? "");
-      const kind = svc.build ? "app" : kindOfImage(image) ?? "app";
+      const buildPath = typeof svc.build === "string" ? svc.build : svc.build?.context ?? "";
+      // 이미지 → 서비스 이름 → 빌드 경로 순으로 종류를 본다 (grafana 를 직접 빌드해도 모니터링)
+      const kind = kindOfImage(image) ?? kindOfImage(name) ?? kindOfImage(buildPath) ?? "app";
       const id = `svc:${name}`;
       const ports = (svc.ports ?? []).map(String);
       node(id, {
@@ -143,7 +147,7 @@ export function extractInfra(repoDir, codeFiles, routes) {
   for (const { rel, doc, raw } of workloads) {
     const containers = doc.spec?.template?.spec?.containers ?? [];
     const image = containers.map((c) => c.image).filter(Boolean).join(", ");
-    const kind = kindOfImage(image) ?? "app";
+    const kind = kindOfImage(image) ?? kindOfImage(doc.metadata.name) ?? "app";
     const id = `k8s:${doc.metadata.name}`;
     node(id, {
       kind,
@@ -257,12 +261,39 @@ export function extractInfra(repoDir, codeFiles, routes) {
     });
     apps = [nodes.get("app:repo")];
   }
-  const mainApp = apps.find((a) => a.dir === "" || a.dir === ".") ?? apps[0];
+  // 게이트웨이 · 프런트가 있으면 그게 대표 앱 (사용자가 들어오는 곳)
+  const gateways = apps.filter((a) => /gateway|frontend|edge|web|ui|bff/i.test(a.label));
+  const mainApp = gateways[0] ?? apps.find((a) => a.dir === "" || a.dir === ".") ?? apps[0];
+  // 모듈이 여러 개인 레포: 파일 경로의 폴더 이름에 서비스 이름이 들어 있으면 그 서비스 코드로 본다
+  const owners = [...nodes.values()].filter((n) => ["app", "registry", "monitoring"].includes(n.kind));
+  const ownerApp = (path) => {
+    if (owners.length <= 1) return mainApp;
+    const segments = path.toLowerCase().split("/").slice(0, 3);
+    let best = null;
+    for (const a of owners) {
+      const name = a.label.toLowerCase();
+      if (name.length < 3) continue;
+      if (a.dir && path.startsWith(a.dir + "/")) return a;
+      if (segments.some((seg) => seg === name || seg.endsWith("-" + name) || seg.endsWith(name))) {
+        if (!best || name.length > best.label.length) best = a;
+      }
+    }
+    return best;
+  };
 
   // 6. 앱 설정: DB 주소 · 외부 API 주소
   const configs = files.filter((f) => /(^|\/)(application|bootstrap)[\w-]*\.(ya?ml|properties)$/.test(f) || /(^|\/)\.env\.(example|sample|template)$/.test(f));
   for (const rel of configs) {
     const raw = read(rel);
+    if (/(^|\/)src\/test\//.test(rel)) continue;
+    const owner = ownerApp(rel);
+    const ownerApps = owner ? [owner] : apps;
+    // 다른 서비스를 부르는 주소 (Spring Cloud Gateway 의 lb://서비스, http://서비스:포트)
+    for (const m of raw.matchAll(/(?:lb|https?):\/\/([\w.-]+)/g)) {
+      const target = hosts.get(m[1]);
+      if (!target) continue;
+      for (const app of ownerApps) link(app.id, target, m[0].startsWith("lb:") ? "라우트" : null, "file", { file: rel, line: lineOf(raw, m[0]) });
+    }
     for (const [kind, re] of DB_SCHEME) {
       const m = raw.match(new RegExp(`[^\\s"'=]*(${re.source})[^\\s"'}]*`, "i"));
       if (!m) continue;
@@ -273,7 +304,7 @@ export function extractInfra(repoDir, codeFiles, routes) {
       const byKind = [...nodes.values()].find((n) => ["database", "cache"].includes(n.kind) && nameMatchesKind(n, kind));
       const target = viaHost ?? byKind?.id ?? (kind === "h2" ? null : node(`db:${kind}`, { kind: kind === "redis" ? "cache" : "database", label: kind, detail: url.slice(0, 60), sources: [{ file: rel, line: lineOf(raw, url.slice(0, 30)) }] }).id);
       if (!target) continue;
-      for (const app of apps) {
+      for (const app of ownerApps) {
         // 같은 종류 저장소에 이미 설정 파일로 확인된 연결이 있으면 추정 연결은 만들지 않는다
         const confirmed = links.some((l) => l.from === app.id && l.confidence === "file" && nameMatchesKind(nodes.get(l.to), kind));
         if (!viaHost && byKind && confirmed) continue;
@@ -285,9 +316,46 @@ export function extractInfra(repoDir, codeFiles, routes) {
       if (/localhost|127\.0\.0\.1|example\.(com|org)|schemas?\.|w3\.org|xmlns|springframework\.org/.test(host) || hosts.has(host)) continue;
       const id = `ext:${host}`;
       node(id, { kind: "external", label: host, detail: "외부 API", sources: [{ file: rel, line: lineOf(raw, m[0]) }] });
-      link(mainApp.id, id, null, "file", { file: rel, line: lineOf(raw, m[0]) });
+      link((owner ?? mainApp).id, id, null, "file", { file: rel, line: lineOf(raw, m[0]) });
     }
     markTunnelToken(raw, rel);
+  }
+
+  // 6-1. 환경 변수 이름으로 아는 외부 서비스 (OPENAI_API_KEY → OpenAI). 주소가 없어서 추정으로 둔다
+  const BRAND_KEYS = [
+    [/OPENAI/, "OpenAI", "api.openai.com"],
+    [/ANTHROPIC|CLAUDE/, "Anthropic", "api.anthropic.com"],
+    [/STRIPE/, "Stripe", "api.stripe.com"],
+    [/SLACK/, "Slack", "slack.com"],
+    [/SENDGRID/, "SendGrid", "api.sendgrid.com"],
+    [/TWILIO/, "Twilio", "api.twilio.com"],
+    [/SENTRY/, "Sentry", "sentry.io"],
+    [/GITHUB_TOKEN|GH_TOKEN/, "GitHub", "api.github.com"],
+  ];
+  for (const rel of files.filter((f) => /(^|\/)(docker-)?compose(\.[\w-]+)?\.ya?ml$/.test(f))) {
+    const services = loadYaml(read(rel))[0]?.services ?? {};
+    for (const [name, svc] of Object.entries(services)) {
+      for (const key of envKeys(svc?.environment)) {
+        const hit = BRAND_KEYS.find(([re]) => re.test(key));
+        if (!hit) continue;
+        const existing = [...nodes.values()].find((n) => n.kind === "external" && n.label === hit[2]);
+        const id = existing?.id ?? `ext:${hit[2]}`;
+        node(id, { kind: "external", label: hit[2], detail: `${hit[1]} (키 이름으로 추정)`, confidence: existing ? existing.confidence : "inferred", sources: [{ file: rel, line: lineOf(read(rel), key) }] });
+        link(`svc:${name}`, id, key, "inferred", { file: rel, line: lineOf(read(rel), key) });
+      }
+    }
+  }
+
+  // 6-2. 직접 빌드하는 서비스 폴더 안 설정 파일(prometheus.yml targets, grafana 데이터소스 …)에 적힌 다른 서비스 주소
+  for (const svc of [...nodes.values()].filter((n) => n.dir)) {
+    for (const rel of files.filter((f) => f.startsWith(svc.dir + "/") && /\.(ya?ml|ini|conf|json|toml)$/.test(f))) {
+      const raw = read(rel);
+      for (const [host, target] of hosts) {
+        if (target === svc.id) continue;
+        const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`(//|['"\\s,\\[])${escaped}:\\d`).test(raw)) link(svc.id, target, null, "file", { file: rel, line: lineOf(raw, host) });
+      }
+    }
   }
 
   // 7. 배포 플랫폼 · CI
@@ -329,9 +397,11 @@ export function extractInfra(repoDir, codeFiles, routes) {
     ? edgeNodes.filter((n) => n.kind === "dns")
     : edgeNodes.filter((n) => n.kind === "tunnel" || n.kind === "proxy").length
       ? edgeNodes.filter((n) => n.kind === "tunnel" || n.kind === "proxy")
-      : apps.filter((a) => a.published).length
-        ? apps.filter((a) => a.published)
-        : [mainApp];
+      : gateways.length
+        ? gateways
+        : apps.filter((a) => a.published).length
+          ? apps.filter((a) => a.published)
+          : [mainApp];
   node("client", { kind: "client", label: "사용자", detail: "브라우저 · API 클라이언트", sources: [] });
   for (const e of entries) link("client", e.id, null, e.kind === "app" && !e.published ? "inferred" : "file", null);
 
@@ -343,11 +413,15 @@ export function extractInfra(repoDir, codeFiles, routes) {
   const dataNodes = [...nodes.values()].filter((n) => ["database", "cache"].includes(n.kind));
   const externals = [...nodes.values()].filter((n) => n.kind === "external");
   const codeLinks = [];
-  for (const [file, list] of routesByFile) codeLinks.push({ node: mainApp.id, file, kind: "entry", detail: list.slice(0, 5).join(", ") });
+  for (const [file, list] of routesByFile) codeLinks.push({ node: (ownerApp(file) ?? mainApp).id, file, kind: "entry", detail: list.slice(0, 5).join(", ") });
   // 앱이 실제로 연결된 DB 에 DB 코드를 붙인다
-  const appData = links.filter((l) => apps.some((a) => a.id === l.from) && dataNodes.some((d) => d.id === l.to)).map((l) => l.to);
-  for (const target of new Set(appData.length ? appData : dataNodes.filter((d) => d.kind === "database").map((d) => d.id))) {
-    for (const file of dbFiles) codeLinks.push({ node: target, file, kind: "data", detail: null });
+  const dataOf = (appIds) => links.filter((l) => appIds.includes(l.from) && dataNodes.some((d) => d.id === l.to)).map((l) => l.to);
+  const anyData = dataOf(apps.map((a) => a.id));
+  for (const file of dbFiles) {
+    const owner = ownerApp(file);
+    const own = owner ? dataOf([owner.id]) : [];
+    const targets = own.length ? own : anyData.length ? anyData : dataNodes.filter((d) => d.kind === "database").map((d) => d.id);
+    for (const target of new Set(targets)) codeLinks.push({ node: target, file, kind: "data", detail: own.length ? null : "어느 저장소인지 추정" });
   }
   for (const ext of externals) {
     const brand = BRANDS.find((b) => ext.label.includes(b));
