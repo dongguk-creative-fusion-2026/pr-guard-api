@@ -7,7 +7,8 @@
     "node": ">=24.11.0"
   },
   "dependencies": {
-    "gitnexus": "1.6.12"
+    "gitnexus": "1.6.12",
+    "js-yaml": "^5.0.0"
   },
   "allowScripts": {
     "@ladybugdb/core@0.18.3": true,

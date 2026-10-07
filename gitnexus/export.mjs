@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { extractInfra, loadYamlLib } from "./infra.mjs";
 
 const [repoArg, outArg, maxArg, maxFunctionsArg] = process.argv.slice(2);
 if (!repoArg || !outArg) {
@@ -94,6 +95,8 @@ try {
                             AND n.content CONTAINS '('
                           RETURN n.id AS id, n.name AS name, label(n) AS kind, n.filePath AS file,
                                  n.startLine AS line, n.endLine AS endLine`),
+      // API 엔드포인트와 그걸 처리하는 파일 (인프라 지도에서 요청이 들어오는 코드)
+      routes: await q("MATCH (rt:Route) RETURN rt.method AS method, rt.name AS path, rt.filePath AS file"),
       calls: await q(`MATCH (a)-[r:CodeRelation]->(b) WHERE r.type = 'CALLS'
                         AND label(a) IN ${cypherList(FUNCTION_LABELS)} AND label(b) IN ${cypherList(FUNCTION_LABELS)}
                         AND a.id <> b.id
@@ -106,6 +109,9 @@ try {
   // 파일 줄 수와 git 이력 (코드 시티 · 핫스팟 · 숨은 결합)
   for (const node of graph.nodes) node.lines = countLines(join(repo, node.id));
   graph.history = readHistory(repo, new Set(graph.nodes.map((n) => n.id)));
+  // 인프라 지도: 요청 경로(client → DNS → Tunnel → 프록시 → 앱)와 DB · 외부 API, 그리고 그걸 쓰는 코드 파일
+  await loadYamlLib();
+  graph.infra = extractInfra(repo, graph.nodes.map((n) => n.id), rows.routes.filter((r) => r.file));
   writeFileSync(outArg, JSON.stringify(graph));
 } catch (e) {
   console.error(e instanceof Error ? e.message : String(e));
