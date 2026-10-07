@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: pr-guard-api
+  servlet:
+    multipart:
+      # 실행 검증 러너가 보내는 JUnit 보고서들
+      max-file-size: 10MB
+      max-request-size: 60MB
   datasource:
     url: jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:prguard}
     username: ${PGUSER:prguard}
@@ -39,6 +44,20 @@ prguard:
     max-repo-kb: ${WORKSPACE_MAX_REPO_KB:300000}
     git-timeout: PT3M
     keep-mirror: P3D
+  execution:
+    # 실행 검증: PR 의 base · head 에서 레포 테스트를 돌려 회귀를 찾는다.
+    # none: 끔(화면에 "실행 환경 준비 중"), kubernetes: Job (클러스터 안이면 서비스 계정, 밖이면 KUBECONFIG), docker: 로컬 개발
+    runner: ${EXEC_RUNNER:none}
+    image: ${EXEC_IMAGE:ghcr.io/dongguk-creative-fusion-2026/pr-guard-test-runner:latest}
+    # 러너가 진행 · 결과를 보낼 이 API 주소 (러너 쪽에서 닿는 주소)
+    callback-url: ${EXEC_CALLBACK_URL:http://localhost:8080}
+    namespace: ${EXEC_NAMESPACE:prguard-runs}
+    # 격리 런타임 (예: gvisor). 비우면 기본 런타임
+    runtime-class: ${EXEC_RUNTIME_CLASS:}
+    cpu: ${EXEC_CPU:2}
+    memory: ${EXEC_MEMORY:3Gi}
+    timeout: ${EXEC_TIMEOUT:PT15M}
+    poll-interval: PT2S
   graph:
     # 레포 전체 파일 의존성 그래프 (GitNexus).
     # ACTIONS: 이 레포의 .github/workflows/repo-graph.yml 을 실행하고 결과를 /api/projects/{id}/graph/result 로 받는다

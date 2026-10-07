@@ -1,0 +1,9 @@
+# 격리 런타임 예시 (클라우드에 따라 다르다).
+# - GKE: 노드 풀을 gVisor(sandbox)로 만들면 RuntimeClass "gvisor" 가 이미 있다. 이 파일은 필요 없다
+# - 직접 설치한 클러스터: runsc 를 노드에 설치한 뒤 이 파일을 적용한다
+# API 에는 EXEC_RUNTIME_CLASS=gvisor 를 넣는다
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc

@@ -43,6 +43,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | `github` | GitHub REST 클라이언트, 레포 URL 파싱 |
 | `project` / `pull` | 프로젝트 등록, PR 상태 저장 |
 | `workspace` | 레포 clone, PR 별 base/head worktree, 그래프용 브랜치 worktree, git 실행 |
+| `execution` | 실행 검증: base · head 에서 테스트를 실제로 돌려 회귀 찾기 (쿠버네티스 Job · 로컬 docker), 러너 콜백. `deploy/k8s/README.md` |
 | `graph` | 레포 전체 파일 의존성 그래프: 대기열 처리·워크플로 실행(`GraphWorker`), 결과 받기(`GraphController`), 로컬 실행(`GraphBuilder`) |
 | `index` | Java 레포 인덱스 (`JavaIndexer`, `RepoIndex`), base↔head 메서드 비교 (`MethodDiff`) |
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
@@ -116,6 +117,7 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | `POLL_INTERVAL` | `PT5M` | 폴링 주기 (ISO-8601) |
 | `WORKSPACE_DIR` | `{tmp}/prguard` | clone·worktree 위치 |
 | `WORKSPACE_MAX_REPO_KB` | `300000` | 이보다 큰 레포는 clone 하지 않고 diff 만 분석 |
+| `EXEC_RUNNER` | `none` | 실행 검증. `kubernetes` · `docker` 면 켜진다 (설정은 `deploy/k8s/README.md`) |
 | `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
 | `GRAPH_DISPATCH_TOKEN` | (`GITHUB_TOKEN`) | pr-guard-api 레포에 Actions 쓰기 권한이 있는 토큰. 워크플로 실행에 쓴다 |
 | `GRAPH_NODE` | `node` | local: node (22.18+ 또는 24.11+) |
