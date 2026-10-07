@@ -65,11 +65,16 @@ public class EvidenceService {
             PullInfo p = ctx.pull();
             List<EvidenceTest> tests = generator.generate(new EvidenceRequest(p.repo().fullName(), p.number(), p.title(),
                     p.body(), targets));
-            sink.done(Stage.EXEC_EVIDENCE, tests.isEmpty() ? "동작이 바뀐 메서드 없음" : "증거 테스트 " + tests.size() + "개",
+            List<EvidenceTest> evidence = tests.stream().filter(t -> !t.probe()).toList();
+            List<EvidenceTest> probes = tests.stream().filter(EvidenceTest::probe).toList();
+            sink.done(Stage.EXEC_EVIDENCE, tests.isEmpty() ? "동작이 바뀐 메서드 없음"
+                            : "증거 테스트 " + evidence.size() + "개 · 관측 " + probes.size() + "개",
                     data("generator", generator.name(),
                             "targets", targets.stream().map(EvidenceRequest.Target::methodId).toList(),
-                            "tests", tests.stream().map(t -> data("className", t.className(), "path", t.path(),
+                            "tests", evidence.stream().map(t -> data("className", t.className(), "path", t.path(),
                                     "target", t.target(), "intent", t.intent(), "code", t.code())).toList(),
+                            "probes", probes.stream().map(t -> data("className", t.className(), "path", t.path(),
+                                    "target", t.target(), "code", t.code())).toList(),
                             "ms", System.currentTimeMillis() - started));
             return new EvidencePlan(tests, changed);
         } catch (RuntimeException e) {

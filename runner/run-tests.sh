@@ -8,8 +8,8 @@
 #   RUN_TOKEN     이 실행 전용 토큰
 #   TRACE_PACKAGES  (선택) 호출을 기록할 패키지. 없으면 src/main/java 아래 공통 패키지를 쓴다. off 면 기록하지 않는다
 #
-# 진행은 {CALLBACK_URL}/progress 로, 결과(JUnit XML · 빌드 로그 끝부분 · 호출 기록)는 {CALLBACK_URL}/report 로 보낸다.
-# clone 뒤 {CALLBACK_URL}/extra-files 에서 PR Guard 가 만든 증거 테스트를 받아 레포 테스트와 함께 돌린다.
+# 진행은 {CALLBACK_URL}/progress 로, 결과(JUnit XML · 빌드 로그 끝부분 · 호출 기록 · 관측 기록)는 {CALLBACK_URL}/report 로 보낸다.
+# clone 뒤 {CALLBACK_URL}/extra-files 에서 PR Guard 가 만든 증거 · 관측 테스트를 받아 레포 테스트와 함께 돌린다.
 # 지원: Gradle wrapper(gradlew), Maven wrapper(mvnw)
 set -uo pipefail
 : "${REPO_URL:?}" "${SHA:?}" "${CALLBACK_URL:?}" "${RUN_TOKEN:?}"
@@ -38,6 +38,7 @@ report() {
   for f in "$WORK"/trace/trace-*.json; do
     [ -s "$f" ] && args+=(-F "trace=@$f;type=application/json")
   done
+  [ -s "$WORK/probe/probe.jsonl" ] && args+=(-F "probe=@$WORK/probe/probe.jsonl;type=application/json")
   for attempt in 1 2 3; do
     curl --silent --show-error --fail --max-time 60 -X POST -H "X-Run-Token: $RUN_TOKEN" "${args[@]}" \
       "$CALLBACK_URL/report" && return 0
@@ -103,6 +104,9 @@ if [ -n "${TRACE_PACKAGES:-}" ] && [ -f /opt/prguard/trace-agent.jar ]; then
   echo "호출 기록 패키지: $TRACE_PACKAGES" >>"$LOG"
 fi
 
+# 관측 테스트(동작 diff)가 결과를 쓰는 곳. 테스트 JVM 이 물려받는다
+export PRGUARD_PROBE_DIR="$WORK/probe"
+
 has_reports() {
   [ -n "$(find . \( -path '*/build/test-results/*' -o -path '*/target/surefire-reports/*' \) -name 'TEST-*.xml' -print -quit 2>/dev/null)" ]
 }
@@ -130,7 +134,7 @@ code=$?
 if [ "${#EXTRA[@]}" -gt 0 ] && ! has_reports; then
   echo "증거 테스트를 빼고 다시 실행" >>"$LOG"
   rm -f "${EXTRA[@]}"
-  rm -rf "$WORK/trace"/*
+  rm -rf "$WORK/trace"/* "$WORK/probe"
   EVIDENCE_DROPPED=compile
   run_build
   code=$?

@@ -32,6 +32,9 @@ public record EvidenceVerdict(EvidenceTest test, Kind kind, Outcome base, Outcom
                                               String baseDropped, String headDropped) {
         List<EvidenceVerdict> result = new ArrayList<>();
         for (EvidenceTest t : tests) {
+            if (t.probe()) {
+                continue;
+            }
             List<TestCase> b = baseDropped == null ? of(baseCases, t.className()) : List.of();
             List<TestCase> h = headDropped == null ? of(headCases, t.className()) : List.of();
             Outcome bo = outcome(b);

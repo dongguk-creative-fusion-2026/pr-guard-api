@@ -79,6 +79,18 @@ public class TestRunRepository {
                 .query(String.class).optional().orElse(null);
     }
 
+    public String probe(long id) {
+        return jdbc.sql("SELECT probe::text FROM test_runs WHERE id = :id").param("id", id)
+                .query(String.class).optional().orElse(null);
+    }
+
+    public void saveProbe(long id, String probeJson) {
+        jdbc.sql("UPDATE test_runs SET probe = CAST(:probe AS jsonb) WHERE id = :id")
+                .param("id", id)
+                .param("probe", probeJson)
+                .update();
+    }
+
     public String trace(long id) {
         return jdbc.sql("SELECT trace::text FROM test_runs WHERE id = :id").param("id", id)
                 .query(String.class).optional().orElse(null);
