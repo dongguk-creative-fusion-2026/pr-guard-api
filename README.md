@@ -108,10 +108,15 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 
 ## 평가
 
-`eval/` 에 평가용 PR 세트(sandbox #2~#9)의 정답표와 채점 스크립트가 있다.
+`eval/` 에 평가용 PR 세트(sandbox #2~#24)의 정답표와 채점 스크립트가 있다.
+
+- 문제 PR 16개 (정답 지적 20개) · 정상 PR 7개. 문제는 AI 가 쓴 코드에서 자주 보이는 실수 유형(요청하지 않은 변경 · 빠진 구현 · 조용한 동작 변경 · 깨지는 호출부 · 레포 맥락 무시 · 보안 회귀 · 환각 의존성 · 스키마 불일치 · 테스트 약화)으로 나눴다.
+- #10~#24 의 문제 PR 은 모두 컴파일되고 기존 테스트를 통과한다. 테스트 통과만으로는 머지 여부를 판단할 수 없는 PR 들이다.
+- 채점: 탐지율, 판정 적절, 정답표 밖 BLOCKER/MAJOR(오탐 후보), 병목 지표(정상 PR 자동 통과 · 문제 PR 누락 · 리뷰 소요 시간), 유형별 탐지, 계층별 기여(정적 · 실행 · AI 중 어디서 잡았나).
 
 ```bash
-# 기준선: diff 만 LLM 에 넣는 리뷰 (분석 파이프라인 도입 전 결과를 저장해 둠)
+# 기준선: diff 만 LLM 에 넣는 리뷰. baseline.json 에 없는 PR 만 리뷰해서 덧붙인다
+OPENAI_API_KEY=... node eval/baseline.mjs
 node eval/score.mjs --baseline eval/baseline.json
 
 # PR Guard: 배포된 API 의 최신 리뷰 (특정 차수만 보려면 --run N)
