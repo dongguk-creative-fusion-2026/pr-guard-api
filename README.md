@@ -136,7 +136,7 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | `GITHUB_TOKEN` | (없음) | 코멘트를 다는 봇 계정 PAT. 없으면 읽기만 한다 (rate limit 60/h) |
 | `GITHUB_COMMENT_ENABLED` | `true` | `false` 면 토큰이 있어도 코멘트를 달지 않는다 (로컬 개발용) |
 | `OPENAI_API_KEY` | (없음) | 없으면 LLM 리뷰 없이 정적 분석만 |
-| `OPENAI_MODEL` | `gpt-5-mini` | Responses API 모델 |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Responses API 모델 |
 | `POLL_INTERVAL` | `PT5M` | 폴링 주기 (ISO-8601) |
 | `WORKSPACE_DIR` | `{tmp}/prguard` | clone·worktree 위치 |
 | `WORKSPACE_MAX_REPO_KB` | `300000` | 이보다 큰 레포는 clone 하지 않고 diff 만 분석 |
