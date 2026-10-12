@@ -1,5 +1,7 @@
 {
   "repo": "dongguk-creative-fusion-2026/pr-guard-sandbox",
+  "patterns": "AI 가 쓴 코드에서 자주 보이는 실수 유형. 요청하지 않은 변경 · 빠진 구현 · 조용한 동작 변경 · 깨지는 호출부 · 레포 맥락 무시 · 보안 회귀 · 환각 의존성 · 스키마 불일치 · 테스트 약화",
+  "note": "#10~#24 의 문제 PR 은 모두 컴파일되고 기존 테스트를 통과한다. 테스트 통과만으로는 머지 여부를 판단할 수 없는 PR 들이다.",
   "cases": [
     {
       "pr": 2,
@@ -21,7 +23,8 @@
           "description": "제목 길이 제한과 무관하게 /api/users/** 를 인증 없이 열어 버림",
           "files": [
             "SecurityConfig.java"
-          ]
+          ],
+          "pattern": "요청하지 않은 변경"
         },
         {
           "id": "2-bio-length",
@@ -38,7 +41,8 @@
           "description": "요청과 무관한 소개 길이 상한 변경. DB 컬럼은 VARCHAR(300) 이라 1000자는 저장 실패",
           "files": [
             "UserService.java"
-          ]
+          ],
+          "pattern": "요청하지 않은 변경"
         }
       ]
     },
@@ -61,7 +65,8 @@
             "CommentService.java",
             "Post.java",
             "decreaseCommentCount"
-          ]
+          ],
+          "pattern": "빠진 구현"
         }
       ]
     },
@@ -88,7 +93,8 @@
             "PostService.java",
             "CommentService.java",
             "PostController.java"
-          ]
+          ],
+          "pattern": "조용한 동작 변경"
         }
       ]
     },
@@ -111,7 +117,8 @@
             "PostRepository.java",
             "PostService.java",
             "V7__drop_post_view_count.sql"
-          ]
+          ],
+          "pattern": "깨지는 호출부"
         }
       ]
     },
@@ -135,7 +142,8 @@
           "files": [
             "CommentService.java",
             "CommentController.java"
-          ]
+          ],
+          "pattern": "보안 회귀"
         }
       ]
     },
@@ -157,7 +165,8 @@
           "description": "Entity 에 category 컬럼을 추가했지만 Flyway 마이그레이션이 없음 (ddl-auto: validate 라 기동 실패)",
           "files": [
             "Post.java"
-          ]
+          ],
+          "pattern": "스키마 불일치"
         }
       ]
     },
@@ -179,7 +188,8 @@
           "description": "알림 서버 시크릿을 소스에 하드코딩",
           "files": [
             "NewPostNotifier.java"
-          ]
+          ],
+          "pattern": "보안 회귀"
         },
         {
           "id": "8-fake-dependency",
@@ -194,7 +204,8 @@
           "description": "com.squareup.okhttp3:okhtttp 는 존재하지 않는 아티팩트 (okhttp 오타)",
           "files": [
             "build.gradle"
-          ]
+          ],
+          "pattern": "환각 의존성"
         },
         {
           "id": "8-test-constructor",
@@ -210,13 +221,288 @@
           "files": [
             "PostService.java",
             "PostServiceTest.java"
-          ]
+          ],
+          "pattern": "깨지는 호출부"
         }
       ]
     },
     {
       "pr": 9,
       "title": "게시글 목록 페이지 조회 추가",
+      "clean": true,
+      "expected": []
+    },
+    {
+      "pr": 10,
+      "title": "회원 소개 앞뒤 공백 정리",
+      "clean": false,
+      "expected": [
+        {
+          "id": "10-null-bio",
+          "category": "B",
+          "pattern": "조용한 동작 변경",
+          "keywords": [
+            "null",
+            "NullPointerException",
+            "NPE"
+          ],
+          "description": "bio.strip() 을 null 검사 전에 불러, 소개를 지우려고 null 을 보내면 지워지지 않고 NPE(500). 기존 테스트는 통과",
+          "files": [
+            "UserService.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 11,
+      "title": "댓글 목록 조회 N+1 제거",
+      "clean": false,
+      "expected": [
+        {
+          "id": "11-order-dropped",
+          "category": "B",
+          "pattern": "조용한 동작 변경",
+          "keywords": [
+            "정렬",
+            "순서",
+            "order by",
+            "orderbyidasc",
+            "order"
+          ],
+          "description": "fetch join 쿼리로 바꾸면서 ORDER BY 가 빠져 댓글 순서가 보장되지 않음 (기존 findByPostIdOrderByIdAsc)",
+          "files": [
+            "CommentRepository.java",
+            "CommentService.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 12,
+      "title": "관리자는 게시글·댓글을 수정·삭제할 수 있게",
+      "clean": false,
+      "expected": [
+        {
+          "id": "12-comment-admin-missing",
+          "category": "A",
+          "pattern": "빠진 구현",
+          "keywords": [
+            "댓글",
+            "comment",
+            "누락",
+            "빠져",
+            "빠진"
+          ],
+          "description": "PR 은 게시글·댓글 모두 관리자 허용이라고 하지만 requireOwner(Comment, User) 는 그대로",
+          "files": [
+            "OwnershipGuard.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 13,
+      "title": "회원 프로필 조회 API",
+      "clean": false,
+      "expected": [
+        {
+          "id": "13-email-exposed",
+          "category": "C",
+          "pattern": "보안 회귀",
+          "keywords": [
+            "email",
+            "이메일",
+            "개인정보",
+            "role",
+            "엔티티",
+            "entity"
+          ],
+          "description": "User 엔티티를 그대로 응답해 다른 회원의 이메일·권한(role)이 노출됨",
+          "files": [
+            "UserController.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 14,
+      "title": "게시글 검색 API",
+      "clean": false,
+      "expected": [
+        {
+          "id": "14-sql-injection",
+          "category": "C",
+          "pattern": "보안 회귀",
+          "keywords": [
+            "sql",
+            "인젝션",
+            "injection",
+            "바인딩",
+            "파라미터",
+            "문자열 연결",
+            "이어 붙"
+          ],
+          "description": "검색어를 네이티브 SQL 에 문자열로 이어 붙여 SQL 인젝션",
+          "files": [
+            "PostSearchRepository.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 15,
+      "title": "댓글 작성 시 게시글 SELECT 생략",
+      "clean": false,
+      "expected": [
+        {
+          "id": "15-missing-post-404",
+          "category": "B",
+          "pattern": "조용한 동작 변경",
+          "keywords": [
+            "getreferencebyid",
+            "getreference",
+            "404",
+            "notfoundexception",
+            "존재하지",
+            "없는 게시글",
+            "외래 키",
+            "dataintegrity",
+            "entitynotfound"
+          ],
+          "description": "없는 게시글에 댓글을 달면 404(NotFoundException) 대신 FK 위반 500. 프록시만 쓰므로 존재 확인이 사라짐",
+          "files": [
+            "CommentService.java",
+            "PostService.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 16,
+      "title": "회원 탈퇴",
+      "clean": false,
+      "expected": [
+        {
+          "id": "16-not-null-no-default",
+          "category": "D",
+          "pattern": "스키마 불일치",
+          "keywords": [
+            "default",
+            "기본값",
+            "기존 행",
+            "기존 데이터",
+            "기존 회원",
+            "not null"
+          ],
+          "description": "NOT NULL 컬럼을 DEFAULT 없이 추가해 회원이 있는 DB 에서는 마이그레이션 실패",
+          "files": [
+            "V7__user_deleted.sql",
+            "User.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 17,
+      "title": "조회수 증가를 엔티티 메서드로 정리",
+      "clean": false,
+      "expected": [
+        {
+          "id": "17-lost-update",
+          "category": "B",
+          "pattern": "레포 맥락 무시",
+          "keywords": [
+            "동시",
+            "경쟁",
+            "race",
+            "원자",
+            "atomic",
+            "lost update",
+            "유실",
+            "incrementviewcount"
+          ],
+          "description": "DB 원자적 증가(동시 조회 누락 방지라고 주석에 적힌 이유)를 읽고-고치고-쓰기로 바꿔 동시 조회 시 조회수 유실",
+          "files": [
+            "PostService.java",
+            "Post.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 18,
+      "title": "게시글 삭제 쿼리 1회로",
+      "clean": false,
+      "expected": [
+        {
+          "id": "18-auth-removed",
+          "category": "C",
+          "pattern": "보안 회귀",
+          "keywords": [
+            "권한",
+            "requireowner",
+            "작성자",
+            "인가",
+            "ownershipguard",
+            "누구나"
+          ],
+          "description": "삭제 전 작성자 확인(OwnershipGuard)을 없애 누구나 남의 게시글을 삭제할 수 있음",
+          "files": [
+            "PostService.java"
+          ]
+        },
+        {
+          "id": "18-test-weakened",
+          "category": "D",
+          "pattern": "테스트 약화",
+          "keywords": [
+            "delete_bynonowner",
+            "테스트 삭제",
+            "테스트를 삭제",
+            "테스트를 지",
+            "테스트가 사라",
+            "테스트 제거"
+          ],
+          "description": "권한 검사를 지키던 테스트(delete_byNonOwner_doesNotDelete)를 지우고 무의미한 테스트로 바꿈",
+          "files": [
+            "PostServiceTest.java"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 19,
+      "title": "댓글 수정 시각 기록",
+      "clean": true,
+      "expected": []
+    },
+    {
+      "pr": 20,
+      "title": "게시글 제목 200자 검증",
+      "clean": true,
+      "expected": []
+    },
+    {
+      "pr": 21,
+      "title": "내 소개 조회 API",
+      "clean": true,
+      "expected": []
+    },
+    {
+      "pr": 22,
+      "title": "게시글 응답에 수정 시각",
+      "clean": true,
+      "expected": []
+    },
+    {
+      "pr": 23,
+      "title": "댓글 서비스 테스트 추가",
+      "clean": true,
+      "expected": []
+    },
+    {
+      "pr": 24,
+      "title": "없음 예외 메시지 공통화",
       "clean": true,
       "expected": []
     }
