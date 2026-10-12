@@ -22,6 +22,8 @@ const maxFunctions = Number(maxFunctionsArg ?? 2000);
 const FUNCTION_LABELS = ["Method", "Function", "Constructor"];
 // git 이력: 최근 커밋 수
 const MAX_COMMITS = 1000;
+// 커밋 제목은 목록에 한 줄로 보여 줄 만큼만 남긴다 (readHistory 가 위쪽 최상위 코드에서 불리므로 여기 둔다)
+const MAX_SUBJECT = 120;
 // 한 번에 많은 파일을 바꾼 커밋(일괄 포맷 · 이름 변경 등)은 "같이 바뀐다"의 근거가 약해서 동시 변경에서 뺀다
 const MAX_FILES_PER_COMMIT = 40;
 const MIN_CO_SUPPORT = 2;
@@ -146,9 +148,6 @@ function countLines(path) {
  * 최근 커밋의 파일별 변경 통계와, 같이 바뀐 파일 쌍을 센다. 그래프에 있는 파일만.
  * 얕은 clone 이면 가장 오래된 커밋은 레포 전체가 추가된 것처럼 보이므로 뺀다.
  */
-/** 커밋 제목은 목록에 한 줄로 보여 줄 만큼만 남긴다 */
-const MAX_SUBJECT = 120;
-
 function readHistory(repoDir, files) {
   const git = (...args) => spawnSync("git", ["-C", repoDir, ...args], { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
   const log = git("log", "--no-merges", "--no-renames", `-n${MAX_COMMITS}`, "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--numstat");
