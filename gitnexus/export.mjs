@@ -146,9 +146,12 @@ function countLines(path) {
  * 최근 커밋의 파일별 변경 통계와, 같이 바뀐 파일 쌍을 센다. 그래프에 있는 파일만.
  * 얕은 clone 이면 가장 오래된 커밋은 레포 전체가 추가된 것처럼 보이므로 뺀다.
  */
+/** 커밋 제목은 목록에 한 줄로 보여 줄 만큼만 남긴다 */
+const MAX_SUBJECT = 120;
+
 function readHistory(repoDir, files) {
   const git = (...args) => spawnSync("git", ["-C", repoDir, ...args], { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
-  const log = git("log", "--no-merges", "--no-renames", `-n${MAX_COMMITS}`, "--format=%x1e%H%x1f%an%x1f%at", "--numstat");
+  const log = git("log", "--no-merges", "--no-renames", `-n${MAX_COMMITS}`, "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--numstat");
   if (log.status !== 0) return null;
   const chunks = log.stdout.split("\x1e").filter((c) => c.trim());
   if (git("rev-parse", "--is-shallow-repository").stdout.trim() === "true" && chunks.length > 1) chunks.pop();
@@ -163,7 +166,7 @@ function readHistory(repoDir, files) {
   let until = null;
   for (const chunk of chunks) {
     const [header, ...lines] = chunk.split("\n");
-    const [, author, at] = header.split("\x1f");
+    const [sha, author, at, subject = ""] = header.split("\x1f");
     const time = Number(at) * 1000;
     until ??= time;
     since = time;
@@ -186,7 +189,8 @@ function readHistory(repoDir, files) {
     }
     if (changes.length > 0) {
       if (!authorIndex.has(author)) authorIndex.set(author, authorIndex.size);
-      timeline.push({ at: Number(at), a: authorIndex.get(author), c: changes });
+      // h = 커밋 해시 앞 12자리 (GitHub 링크), m = 커밋 제목
+      timeline.push({ at: Number(at), a: authorIndex.get(author), h: sha.slice(0, 12), m: subject.slice(0, MAX_SUBJECT), c: changes });
     }
     if (touched.length < 2 || touched.length > MAX_FILES_PER_COMMIT) continue;
     touched.sort();
@@ -228,7 +232,7 @@ function readHistory(repoDir, files) {
     until: until === null ? null : new Date(until).toISOString(),
     files: fileStats,
     coChanges,
-    // 오래된 커밋부터. c = [[파일 번호, 추가, 삭제]], 파일 번호는 timelineFiles, 작성자 번호는 authors
+    // 오래된 커밋부터. c = [[파일 번호, 추가, 삭제]], 파일 번호는 timelineFiles, 작성자 번호는 authors, h = 해시, m = 제목
     timelineFiles: [...files],
     authors: [...authorIndex.keys()],
     // git log 순서와 작성 시각이 어긋나는 커밋(리베이스 등)이 있어 시각으로 정렬한다
