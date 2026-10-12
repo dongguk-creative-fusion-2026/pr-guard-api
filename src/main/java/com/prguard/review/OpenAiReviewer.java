@@ -27,14 +27,21 @@ public class OpenAiReviewer implements Reviewer {
                             "items", Map.of(
                                     "type", "object",
                                     "additionalProperties", false,
-                                    "required", List.of("severity", "file", "line", "title", "message"),
+                                    "required", List.of("severity", "file", "line", "title", "message", "kind",
+                                            "symbols"),
                                     "properties", Map.of(
                                             "severity", Map.of("type", "string",
                                                     "enum", List.of("BLOCKER", "MAJOR", "MINOR")),
                                             "file", Map.of("type", "string"),
                                             "line", Map.of("type", List.of("integer", "null")),
                                             "title", Map.of("type", "string"),
-                                            "message", Map.of("type", "string"))))));
+                                            "message", Map.of("type", "string"),
+                                            "kind", Map.of("type", "string", "enum", LlmReview.KINDS),
+                                            "symbols", Map.of("type", "array",
+                                                    "items", Map.of("type", "string")))))));
+
+    private static final int MAX_SYMBOLS = 5;
+    private static final int MAX_SYMBOL_CHARS = 200;
 
     private final RestClient http;
     private final OpenAiProperties props;
@@ -89,12 +96,26 @@ public class OpenAiReviewer implements Reviewer {
                         f.path("file").asText(""),
                         f.path("line").isInt() ? f.path("line").asInt() : null,
                         f.path("title").asText(""),
-                        f.path("message").asText("")));
+                        f.path("message").asText(""),
+                        LlmReview.KINDS.contains(f.path("kind").asText()) ? f.path("kind").asText() : "OTHER",
+                        symbols(f.path("symbols"))));
             }
             return new LlmReview(root.path("summary").asText(""), items);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("OpenAI 응답이 JSON 이 아닙니다: " + e.getOriginalMessage());
         }
+    }
+
+    /** 빈 이름은 버리고, 터무니없이 길거나 많은 이름은 자른다 (검증에 쓰는 값이라 모양만 지킨다). */
+    private static List<String> symbols(JsonNode node) {
+        List<String> result = new ArrayList<>();
+        for (JsonNode s : node) {
+            String name = s.asText("").strip();
+            if (!name.isEmpty() && name.length() <= MAX_SYMBOL_CHARS && result.size() < MAX_SYMBOLS) {
+                result.add(name);
+            }
+        }
+        return result;
     }
 
     /** output[] 중 message 의 output_text 를 이어 붙인다. */

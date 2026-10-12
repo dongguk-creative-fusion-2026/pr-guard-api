@@ -54,6 +54,7 @@ public class LessonService {
                         )
                         SELECT l.pr_number, l.id AS review_id, f.rule_id, f.severity, f.file, f.title, f.message
                           FROM latest l JOIN findings f ON f.review_id = l.id
+                         WHERE f.grounding IS NULL OR f.grounding ->> 'status' <> 'REFUTED'
                          ORDER BY l.pr_number DESC, f.id
                         """)
                 .param("projectId", projectId)

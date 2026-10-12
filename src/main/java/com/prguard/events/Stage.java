@@ -5,11 +5,11 @@ package com.prguard.events;
  *
  * <pre>
  * COLLECT → CHECKOUT → INDEX_BASE ∥ INDEX_HEAD → METHOD_DIFF → HISTORY
- *        → CHECK_A ∥ CHECK_B ∥ CHECK_C ∥ CHECK_D ∥ LLM → VERDICT → PUBLISH → REVIEW
+ *        → CHECK_A ∥ CHECK_B ∥ CHECK_C ∥ CHECK_D ∥ LLM → GROUND → VERDICT → PUBLISH → REVIEW
  *
- * 실행 검증 레인 (CHECKOUT 뒤에서 나란히 돌고 VERDICT 에 합류):
+ * 실행 검증 레인 (CHECKOUT 뒤에서 나란히 돌고 GROUND 에 합류):
  *   EXEC_PREPARE → EXEC_POD_BASE → EXEC_TEST_BASE ┐
- *               → EXEC_POD_HEAD → EXEC_TEST_HEAD ┴→ EXEC_DIFF → VERDICT
+ *               → EXEC_POD_HEAD → EXEC_TEST_HEAD ┴→ EXEC_DIFF → GROUND
  *   METHOD_DIFF → EXEC_EVIDENCE → EXEC_TEST_BASE · EXEC_TEST_HEAD (증거 테스트를 함께 돌린다)
  * </pre>
  */
@@ -41,6 +41,8 @@ public enum Stage {
     EXEC_TEST_HEAD,
     /** base 에서 통과하던 테스트가 head 에서 실패하는지 비교 */
     EXEC_DIFF,
+    /** 지적마다 인덱스 · 이력 · 실행 · AI 층의 근거를 맞춰 보고, 인덱스와 어긋나는 AI 지적을 뺀다 */
+    GROUND,
     VERDICT,
     PUBLISH,
     /** 리뷰 전체. DONE/FAILED 가 오면 스트림이 끝난다 */

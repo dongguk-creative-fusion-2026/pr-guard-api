@@ -4,6 +4,7 @@ import com.prguard.analysis.AnalysisResult;
 import com.prguard.analysis.ChangedFile;
 import com.prguard.analysis.ContextSummary;
 import com.prguard.analysis.Finding;
+import com.prguard.analysis.Grounding;
 import com.prguard.analysis.Severity;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -22,7 +23,8 @@ public class SummaryRenderer {
     public String render(String headSha, List<ChangedFile> files, AnalysisResult result, String reviewUrl) {
         int additions = files.stream().mapToInt(ChangedFile::additions).sum();
         int deletions = files.stream().mapToInt(ChangedFile::deletions).sum();
-        List<Finding> findings = result.findings();
+        List<Finding> findings = result.findings().stream().filter(f -> !f.refuted()).toList();
+        List<Finding> refuted = result.findings().stream().filter(Finding::refuted).toList();
 
         StringBuilder sb = new StringBuilder();
         sb.append(MARKER).append('\n');
@@ -42,9 +44,10 @@ public class SummaryRenderer {
         if (findings.isEmpty()) {
             sb.append("지적 사항 없음\n\n");
         } else {
-            sb.append("| 심각도 | 분류 | 위치 | 내용 |\n|---|---|---|---|\n");
+            sb.append("| 심각도 | 분류 | 근거 | 위치 | 내용 |\n|---|---|---|---|---|\n");
             findings.stream().limit(MAX_FINDING_ROWS).forEach(f -> sb.append("| ").append(badge(f.severity()))
                     .append(" | ").append(f.category().label()).append(f.source().equals(Finding.LLM) ? " · AI" : "")
+                    .append(" | ").append(layers(f))
                     .append(" | ").append(location(f))
                     .append(" | **").append(cell(f.title())).append("**<br>").append(cell(f.message()))
                     .append(" |\n"));
@@ -52,6 +55,14 @@ public class SummaryRenderer {
                 sb.append("\n외 ").append(findings.size() - MAX_FINDING_ROWS).append("건\n");
             }
             sb.append('\n');
+        }
+
+        if (!refuted.isEmpty()) {
+            sb.append("<details><summary>코드 인덱스와 어긋나 판정에서 뺀 AI 지적 ").append(refuted.size())
+                    .append("건</summary>\n\n");
+            refuted.forEach(f -> sb.append("- ~~").append(cell(f.title())).append("~~ ").append(location(f))
+                    .append(" — ").append(cell(indexNote(f))).append('\n'));
+            sb.append("\n</details>\n\n");
         }
 
         ContextSummary ctx = result.context();
@@ -68,6 +79,7 @@ public class SummaryRenderer {
         }
         ctx.notes().forEach(n -> sb.append("- ⚠️ ").append(n).append('\n'));
         sb.append("- 판정 기준: BLOCKER 1건 이상 → 머지 비권장, MAJOR 1건 이상 → 수정 후 머지\n");
+        sb.append("- 근거: 지적을 확인한 층 (인덱스 · 이력 · 실행 · AI). AI 만 주장한 지적은 \"AI 만\"\n");
         sb.append("\n</details>\n\n");
 
         sb.append("<details><summary>변경 파일</summary>\n\n");
@@ -93,6 +105,41 @@ public class SummaryRenderer {
         }
         sb.append("\n<sub>pr-guard · ").append(f.ruleId()).append("</sub>");
         return sb.toString();
+    }
+
+    /** 지적을 확인(CONFIRMED)하거나 뒷받침(RELATED)한 층 */
+    private static String layers(Finding f) {
+        Grounding g = f.grounding();
+        if (g == null) {
+            return "-";
+        }
+        if (g.status() == Grounding.Status.AI_ONLY) {
+            return "AI 만";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Grounding.Layer layer : g.layers()) {
+            if (layer.mark() == Grounding.Mark.CONFIRMED) {
+                sb.append(sb.isEmpty() ? "" : "·").append(layerLabel(layer.layer()));
+            }
+        }
+        return sb.isEmpty() ? "-" : sb.toString();
+    }
+
+    private static String layerLabel(Grounding.LayerId id) {
+        return switch (id) {
+            case INDEX -> "인덱스";
+            case HISTORY -> "이력";
+            case RUNTIME -> "실행";
+            case AI -> "AI";
+        };
+    }
+
+    private static String indexNote(Finding f) {
+        return f.grounding().layers().stream()
+                .filter(l -> l.layer() == Grounding.LayerId.INDEX)
+                .map(Grounding.Layer::note)
+                .findFirst()
+                .orElse("");
     }
 
     private static String counts(List<Finding> findings) {

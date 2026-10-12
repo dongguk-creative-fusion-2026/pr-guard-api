@@ -10,7 +10,8 @@
 // 보는 것
 // - 탐지 · 판정: 문제를 찾았나, 머지 여부를 맞게 판단했나
 // - 병목: 정상 PR 을 "머지 가능"으로 통과시켜 사람이 깊게 볼 PR 을 줄였나, 그러면서 문제 PR 을 흘리지 않았나
-// - 계층별 기여: 정적 분석 · 실행 검증 · AI 리뷰 중 어디서 잡았나 (API 결과만)
+// - 층별 기여: 코드 인덱스 · git 이력 · 실행 · AI 중 어느 층이 확인했나 (API 결과만, 근거 확인을 거친 리뷰는 층별 판단으로)
+// 코드 인덱스와 어긋나 판정에서 뺀 지적(grounding.status = REFUTED)은 탐지 · 오탐 어디에도 세지 않는다
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,9 +22,10 @@ const args = Object.fromEntries(
 const here = dirname(fileURLToPath(import.meta.url));
 const cases = JSON.parse(readFileSync(args.cases ?? join(here, 'cases.json'), 'utf8')).cases;
 const SEVERITIES = ['BLOCKER', 'MAJOR', 'MINOR'];
-const LAYERS = ['정적', '실행', 'AI'];
+const LAYERS = ['인덱스', '이력', '실행', 'AI'];
+const LAYER_LABEL = { INDEX: '인덱스', HISTORY: '이력', RUNTIME: '실행', AI: 'AI' };
 
-/** 리뷰 하나 → { verdict, seconds, units: [{ text, severity, layer }] } */
+/** 리뷰 하나 → { verdict, seconds, refuted, units: [{ text, severity, layers }] } */
 async function loadReviews() {
   if (args.baseline) {
     const baseline = JSON.parse(readFileSync(args.baseline, 'utf8'));
@@ -43,24 +45,32 @@ async function loadReviews() {
     if (candidates.length === 0) continue;
     const detail = await (await fetch(`${args.api}/api/reviews/${candidates[0].id}`)).json();
     const { startedAt, finishedAt } = detail.review;
+    const kept = detail.findings.filter((f) => f.grounding?.status !== 'REFUTED');
     result.set(c.pr, {
       verdict: verdictLabel(detail.review.verdict),
       seconds: startedAt && finishedAt ? (Date.parse(finishedAt) - Date.parse(startedAt)) / 1000 : null,
-      units: detail.findings.map((f) => ({
+      refuted: detail.findings.length - kept.length,
+      units: kept.map((f) => ({
         text: [f.file, f.title, f.message, f.evidence].filter(Boolean).join(' '),
         severity: f.severity,
-        layer: layerOf(f.ruleId),
+        layers: layersOf(f),
       })),
     });
   }
   return result;
 }
 
-/** 지적을 만든 계층. LLM_REVIEW 는 AI, EXEC_* 는 실행 검증, 나머지(AST_* · 참조 검사)는 정적 분석. */
-function layerOf(ruleId) {
-  if (ruleId === 'LLM_REVIEW') return 'AI';
-  if (ruleId?.startsWith('EXEC_')) return '실행';
-  return '정적';
+/**
+ * 지적을 확인한 층. 근거 확인을 거친 리뷰는 층별 판단(CONFIRMED)을 쓰고,
+ * 그 전 리뷰는 지적을 만든 곳으로 정한다 (LLM_REVIEW → AI, EXEC_* → 실행, 나머지 → 인덱스).
+ */
+function layersOf(f) {
+  if (f.grounding) {
+    return f.grounding.layers.filter((l) => l.mark === 'CONFIRMED').map((l) => LAYER_LABEL[l.layer]);
+  }
+  if (f.ruleId === 'LLM_REVIEW') return ['AI'];
+  if (f.ruleId?.startsWith('EXEC_')) return ['실행'];
+  return ['인덱스'];
 }
 
 function verdictLabel(v) {
@@ -72,11 +82,11 @@ function fromMarkdown(md) {
   const lines = md.split('\n');
   const units = lines
     .filter((l) => l.startsWith('|') && SEVERITIES.some((s) => l.includes(s)))
-    .map((l) => ({ text: l, severity: SEVERITIES.find((s) => l.includes(s)), layer: 'AI' }));
+    .map((l) => ({ text: l, severity: SEVERITIES.find((s) => l.includes(s)), layers: ['AI'] }));
   const at = lines.findIndex((l) => l.trim().startsWith('### 판정'));
   const verdictLine = at >= 0 ? lines.slice(at + 1).find((l) => l.trim()) ?? '' : '';
   const verdict = ['머지 비권장', '수정 후 머지', '머지 가능'].find((v) => verdictLine.includes(v)) ?? '-';
-  return { verdict, seconds: null, units };
+  return { verdict, seconds: null, refuted: 0, units };
 }
 
 function matches(unit, expected) {
@@ -100,6 +110,7 @@ let cleanReviewed = 0;
 let riskyLeaked = 0;
 let riskyReviewed = 0;
 let unmatchedSerious = 0;
+let refutedTotal = 0;
 const seconds = [];
 const byPattern = new Map(); // 유형 → { hit, total }
 const byLayer = new Map(LAYERS.map((l) => [l, { hit: 0, only: 0 }]));
@@ -111,6 +122,7 @@ for (const c of cases) {
     continue;
   }
   reviewed++;
+  refutedTotal += review.refuted;
   if (review.seconds != null) seconds.push(review.seconds);
   const verdictOk = c.clean ? review.verdict === '머지 가능' : review.verdict !== '머지 가능';
   if (verdictOk) correctVerdicts++;
@@ -134,7 +146,7 @@ for (const c of cases) {
     if (hit.length === 0) return `❌ ${e.category}:${e.id}`;
     detected++;
     stat.hit++;
-    const layers = LAYERS.filter((l) => hit.some((u) => u.layer === l));
+    const layers = LAYERS.filter((l) => hit.some((u) => u.layers.includes(l)));
     layers.forEach((l) => byLayer.get(l).hit++);
     if (layers.length === 1) byLayer.get(layers[0]).only++;
     const best = SEVERITIES.find((s) => hit.some((u) => u.severity === s));
@@ -153,6 +165,7 @@ console.log(`- 리뷰된 PR: ${reviewed} / ${cases.length}`);
 console.log(`- 탐지: ${ratio(detected, total)}`);
 console.log(`- 판정 적절: ${ratio(correctVerdicts, reviewed)} (문제 PR 은 "머지 가능"이 아니어야, 정상 PR 은 "머지 가능"이어야 적절)`);
 console.log(`- 정답표 밖 BLOCKER/MAJOR: ${unmatchedSerious}건 (오탐 후보, 사람이 확인)`);
+if (!args.baseline) console.log(`- 코드 인덱스와 어긋나 판정에서 뺀 AI 지적: ${refutedTotal}건`);
 
 console.log('\n## 병목\n');
 console.log(`- 정상 PR 자동 통과: ${ratio(cleanPassed, cleanReviewed)} — 사람이 깊게 보지 않아도 되는 PR`);
@@ -169,8 +182,8 @@ console.log('|---|---|');
 for (const [pattern, s] of byPattern) console.log(`| ${pattern} | ${s.hit} / ${s.total} |`);
 
 if (!args.baseline) {
-  console.log('\n## 계층별 기여\n');
-  console.log('| 계층 | 잡은 정답 | 그 계층만 잡은 정답 |');
+  console.log('\n## 층별 기여\n');
+  console.log('| 층 | 확인한 정답 | 그 층만 확인한 정답 |');
   console.log('|---|---|---|');
   for (const [layer, s] of byLayer) console.log(`| ${layer} | ${s.hit} | ${s.only} |`);
 }

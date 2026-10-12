@@ -2,7 +2,7 @@
 
 PR Guard 백엔드. AI 네이티브 개발 환경에서 **속도는 그대로 두고 코드 품질을 지키는 PR 검증 계층**이다.
 
-등록된 public GitHub 레포의 열린 PR 을 주기적으로 조회하고, 새 커밋이 보이면 **diff · 레포 전체 · git 이력 · PR 설명**을 함께 분석하고, 켜져 있으면 **base · head 에서 테스트를 실제로 돌려** 근거를 만든 뒤 판정해 PR 에 리뷰를 남긴다. LLM 의 말만 믿지 않는다: 근거는 정적 분석 · 이력 통계 · 실행 결과로 만들고, 판정은 규칙이 계산한다.
+등록된 public GitHub 레포의 열린 PR 을 주기적으로 조회하고, 새 커밋이 보이면 **diff · 레포 전체 · git 이력 · PR 설명**을 함께 분석하고, 켜져 있으면 **base · head 에서 테스트를 실제로 돌려** 근거를 만든 뒤 판정해 PR 에 리뷰를 남긴다. LLM 의 말만 믿지 않는다: 근거는 정적 분석 · 이력 통계 · 실행 결과로 만들고, AI 지적은 그 층들에 비춰 확인하고(인덱스와 어긋나면 뺀다), 판정은 규칙이 계산한다.
 
 - 프론트엔드: [pr-guard-web](https://github.com/dongguk-creative-fusion-2026/pr-guard-web)
 - 테스트·평가용 레포: [pr-guard-sandbox](https://github.com/dongguk-creative-fusion-2026/pr-guard-sandbox)
@@ -36,7 +36,12 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   │   ├ EvidenceService  본문만 바뀐 메서드마다 "base 통과 · head 실패" 증거 테스트 생성 → 러너가 받아 함께 실행
   │   │   ├ trace-agent      테스트 중 실제 호출 기록 (호출 횟수 · 간선 · 테스트별로 지나간 함수)
   │   │   └ 비교: 회귀(BLOCKER) · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화(MAJOR) · 테스트가 안 지나간 변경(MINOR)
-  │   └ VerdictPolicy   판정 계산 (BLOCKER ≥1 → 머지 비권장, MAJOR ≥1 → 수정 후 머지)
+  │   ├ FindingGrounder 근거 확인: 지적마다 코드 인덱스 · git 이력 · 실행 · AI 층에 비춰 본다
+  │   │   ├ 인덱스: 결정적 검사가 같은 곳을 지적했나, AI 가 "없다"고 한 이름이 head 에 있나,
+  │   │   │         "빠졌다"고 한 검사가 연결된 코드(바뀐 메서드 · 호출부 · 그 타입을 받는 메서드)에 이미 있나
+  │   │   ├ 이력 · 실행 · AI: 빠진 동시 변경 파일 · 지운 줄의 원래 커밋, 실행으로 증명한 동작 변화, AI 도 같은 곳을 지적했나
+  │   │   └ 상태: CONFIRMED (AI 아닌 층도 확인) · AI_ONLY (AI 만 주장) · REFUTED (인덱스와 어긋남 → 판정 · 라인 코멘트에서 뺌)
+  │   └ VerdictPolicy   판정 계산 (BLOCKER ≥1 → 머지 비권장, MAJOR ≥1 → 수정 후 머지, REFUTED 는 세지 않음)
   ├ 저장: findings, 판정, 분석 재료 요약(context)
   └ PR: 요약 코멘트 1개(계속 수정) + 라인 코멘트(같은 지적은 한 번만)
 ```
@@ -56,7 +61,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | `index` | Java 레포 인덱스 (`JavaIndexer`, `RepoIndex`), base↔head 메서드 비교 (`MethodDiff`) |
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
 | `diff` | GitHub patch 해석 (hunk, 추가·삭제 라인, 라인 코멘트 가능 라인) |
-| `analysis` | 지적 사항 모델(`Finding`), 검사기(`Analyzer`, `SnapshotAnalyzer`), 파이프라인, 판정 |
+| `analysis` | 지적 사항 모델(`Finding`), 검사기(`Analyzer`, `SnapshotAnalyzer`), 파이프라인, 근거 확인(`FindingGrounder`, `Grounding`), 판정 |
 | `analysis.rules` | 검사 규칙. 지금은 레포 인덱스 기반 참조 검사(`ReferenceCheckAnalyzer`) |
 | `review` | LLM 리뷰어(`Reviewer`: OpenAI / stats-only), 리뷰 작업 저장 |
 | `report` | 요약·라인 코멘트 본문과 게시 |
@@ -90,7 +95,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | POST | `/api/projects/{id}/poll` | 지금 폴링 |
 | POST | `/api/projects/{id}/pulls/{number}/reviews` | 현재 커밋 다시 리뷰 (run 증가) |
 | GET | `/api/projects/{id}/reviews?limit=20` | 리뷰 기록 (판정, 지적 수) |
-| GET | `/api/reviews/{id}` | 리뷰 + 지적 사항 + 분석 재료 요약(`context`) |
+| GET | `/api/reviews/{id}` | 리뷰 + 지적 사항(층별 근거 `grounding` 포함) + 분석 재료 요약(`context`) |
 | GET | `/api/projects/{id}/graph` | 레포 의존성 그래프 (상태, 기준 커밋, `graph`: 파일 노드·의존 간선·커뮤니티) |
 | POST | `/api/projects/{id}/graph` | 기본 브랜치 최신 커밋으로 그래프 다시 만들기 (202) |
 | GET | `/api/projects/{id}/repo` | GitHub 레포 정보 (설명, 언어 구성, 크기 …) — 등록 화면 |

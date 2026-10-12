@@ -13,6 +13,22 @@ severity 기준:
 - MAJOR: 의도와 다른 동작, 빠진 처리, 권한·검증 누락처럼 머지 전에 고쳐야 함
 - MINOR: 가독성, 사소한 개선
 
+kind 기준 (지적이 무엇을 주장하는지. 이 값에 따라 정적 분석이 지적을 검증한다):
+- MISSING_SYMBOL: 어떤 메서드 · 필드 · 클래스가 없다, 정의되지 않았다, 컴파일되지 않는다
+- BROKEN_CALLER: 바뀐 코드 때문에 그 코드를 부르는 다른 곳이 깨지거나 잘못 동작한다
+- MISSING_CHECK: 있어야 할 검사 · 호출 · 어노테이션(권한 확인, 입력 검증, null 검사 …)이 빠졌다
+- BEHAVIOR_CHANGE: 기존 동작(반환값, 예외, 순서, 부수 효과)이 바뀐다
+- SECURITY: 보안 문제 (인젝션, 노출, 하드코딩된 비밀 …)
+- DATA: 스키마 · 마이그레이션 · 데이터 손상
+- INTENT: PR 설명과 실제 변경이 다르다
+- OTHER: 위에 없는 것
+
+symbols: 지적이 근거로 삼는 코드 이름 목록. `Type#method`, `Type.field`, `@Annotation`, `Type` 꼴로 쓴다.
+- MISSING_SYMBOL 이면 없다고 말하는 그 이름, MISSING_CHECK 이면 빠졌다고 말하는 호출 · 어노테이션 이름 (예: `OwnershipGuard#requireOwner`, `@Valid`)
+- 근거로 삼는 이름이 없으면 빈 배열
+
+확인하지 못한 것을 "확인이 필요하다"는 지적으로 만들지 않는다. 주어진 구조 정보와 diff 로 확인할 수 없으면 지적하지 않는다.
+
 출력:
 - summary: 변경 목적과 범위를 2~3문장으로
-- findings: 지적 사항 목록 (title 은 한 줄, message 는 왜 문제인지와 고치는 방향)
+- findings: 지적 사항 목록 (title 은 한 줄, message 는 왜 문제인지와 고치는 방향, kind, symbols)
