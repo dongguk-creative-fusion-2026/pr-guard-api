@@ -48,6 +48,7 @@ import org.springframework.stereotype.Component;
  *   <li>git 이력 통계 · 바뀐 라인의 blame</li>
  *   <li>결정적 검사기 실행 (base 에도 있던 문제는 제외)</li>
  *   <li>LLM 리뷰 (구조 정보를 함께 넘김)</li>
+ *   <li>근거 확인: 지적마다 인덱스 · 이력 · 실행 · AI 층을 맞춰 보고, 인덱스와 어긋나는 AI 지적은 판정에서 뺀다</li>
  *   <li>판정 계산</li>
  * </ol>
  * 앞 단계가 실패해도 가능한 데까지 진행하고, 실패 이유는 notes 에 남긴다.
@@ -69,11 +70,12 @@ public class AnalysisPipeline {
     private final Executor executor;
     private final TestRunService testRuns;
     private final EvidenceService evidence;
+    private final FindingGrounder grounder;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
-                            TestRunService testRuns, EvidenceService evidence) {
+                            TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -84,6 +86,7 @@ public class AnalysisPipeline {
         this.executor = executor;
         this.testRuns = testRuns;
         this.evidence = evidence;
+        this.grounder = grounder;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
@@ -159,15 +162,18 @@ public class AnalysisPipeline {
             findings.addAll(execution.join());
             planning.join();
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
+            List<Finding> grounded = ground(findings, ctx, sink);
 
-            Verdict verdict = verdictPolicy.decide(findings, majorThreshold);
+            Verdict verdict = verdictPolicy.decide(grounded, majorThreshold);
+            List<Finding> counted = grounded.stream().filter(f -> !f.refuted()).toList();
             sink.done(Stage.VERDICT, verdict.label(), data(
                     "verdict", verdict.name(),
-                    "blocker", count(findings, Severity.BLOCKER),
-                    "major", count(findings, Severity.MAJOR),
-                    "minor", count(findings, Severity.MINOR),
-                    "total", findings.size()));
-            return new AnalysisResult(findings, verdict, outcome.summary(), reviewer.name(),
+                    "blocker", count(counted, Severity.BLOCKER),
+                    "major", count(counted, Severity.MAJOR),
+                    "minor", count(counted, Severity.MINOR),
+                    "refuted", grounded.size() - counted.size(),
+                    "total", counted.size()));
+            return new AnalysisResult(grounded, verdict, outcome.summary(), reviewer.name(),
                     summarize(ctx, System.currentTimeMillis() - started));
         } finally {
             plan.complete(EvidencePlan.EMPTY);
@@ -230,6 +236,37 @@ public class AnalysisPipeline {
             ctx.note("LLM 리뷰 실패: " + e.getMessage());
             sink.failed(Stage.LLM, e.getMessage());
             return new LlmOutcome("LLM 리뷰를 하지 못했습니다. 정적 분석 결과만 표시합니다.", List.of());
+        }
+    }
+
+    /** 근거 확인. 실패해도 지적은 그대로 두고 판정을 계속한다. */
+    private List<Finding> ground(List<Finding> findings, AnalysisContext ctx, EventSink sink) {
+        long t = System.currentTimeMillis();
+        sink.running(Stage.GROUND, "지적 " + findings.size() + "건");
+        try {
+            List<Finding> grounded = grounder.ground(findings, ctx, testRuns.enabled());
+            Map<Grounding.Status, Long> byStatus = new EnumMap<>(Grounding.Status.class);
+            grounded.forEach(f -> byStatus.merge(f.grounding().status(), 1L, Long::sum));
+            long confirmed = byStatus.getOrDefault(Grounding.Status.CONFIRMED, 0L);
+            long aiOnly = byStatus.getOrDefault(Grounding.Status.AI_ONLY, 0L);
+            long refuted = byStatus.getOrDefault(Grounding.Status.REFUTED, 0L);
+            sink.done(Stage.GROUND, refuted > 0 ? "인덱스와 어긋난 지적 " + refuted + "건 뺌"
+                    : "확인 " + confirmed + " · AI 만 " + aiOnly, data(
+                    "confirmed", confirmed,
+                    "aiOnly", aiOnly,
+                    "refuted", refuted,
+                    "findings", grounded.stream().limit(20)
+                            .map(f -> data("severity", f.severity().name(), "title", f.title(), "file", f.file(),
+                                    "line", f.line(), "status", f.grounding().status().name(),
+                                    "layers", f.grounding().layers()))
+                            .toList(),
+                    "ms", System.currentTimeMillis() - t));
+            return grounded;
+        } catch (RuntimeException e) {
+            log.warn("근거 확인 실패: {}", e.toString());
+            ctx.note("근거 확인 실패: " + e.getMessage());
+            sink.failed(Stage.GROUND, e.getMessage());
+            return findings;
         }
     }
 
@@ -496,7 +533,8 @@ public class AnalysisPipeline {
             Integer line = item.line() != null && file.patch().commentableLines().contains(item.line())
                     ? item.line() : null;
             result.add(new Finding("LLM_REVIEW", Category.GENERAL, severity, file.filename(), line, item.title(),
-                    item.message(), null, item.title().strip().toLowerCase(Locale.ROOT), Finding.LLM));
+                    item.message(), null, item.title().strip().toLowerCase(Locale.ROOT), Finding.LLM,
+                    Grounding.claim(item.kind(), item.symbols())));
         }
         return result;
     }

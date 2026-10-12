@@ -22,7 +22,8 @@ import org.springframework.stereotype.Component;
  * PR 에 결과를 남긴다.
  * <ul>
  *   <li>요약: PR 당 코멘트 하나. 처음엔 만들고 그 뒤로는 같은 코멘트를 고친다</li>
- *   <li>라인 코멘트: 라인을 특정한 지적만, 이 PR 에 이미 단 지적은 다시 달지 않는다</li>
+ *   <li>라인 코멘트: 라인을 특정한 지적만, 이 PR 에 이미 단 지적은 다시 달지 않는다.
+ *       코드 인덱스와 어긋나 판정에서 뺀 지적은 달지 않는다</li>
  * </ul>
  * 토큰이 없으면 아무것도 하지 않는다 (dry-run).
  */
@@ -79,7 +80,7 @@ public class CommentPublisher {
         files.forEach(f -> commentable.put(f.filename(), f.patch().commentableLines()));
         Set<String> already = posted.fingerprints(pr.id());
         List<Finding> targets = findings.stream()
-                .filter(f -> f.line() != null && f.file() != null && !already.contains(f.fingerprint()))
+                .filter(f -> f.line() != null && f.file() != null && !f.refuted() && !already.contains(f.fingerprint()))
                 .filter(f -> commentable.getOrDefault(f.file(), Set.of()).contains(f.line()))
                 .limit(MAX_INLINE)
                 .toList();
