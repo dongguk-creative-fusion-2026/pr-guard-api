@@ -129,6 +129,55 @@ class FindingGrounderTest {
     }
 
     @Test
+    void ground_missingCheckNamingTheLocationItself_isNotRefuted() throws IOException {
+        // sandbox #8 · #17 재리뷰: AI 가 빠진 호출 대신 지적 위치(그 메서드 · 그 파일의 메서드)를 symbols 에 적었다.
+        // 그 이름은 당연히 연결된 코드가 부르므로, "이미 있다"고 반박하면 안 된다
+        writeBoth(POST, """
+                package b;
+                public class Post {
+                    private long viewCount;
+                    public void increaseViewCount() {
+                        this.viewCount++;
+                    }
+                }""");
+        writeBoth(SERVICE, """
+                package b;
+                public class PostService {
+                    private Post post;
+                    public void view() {
+                        post.increaseViewCount();
+                    }
+                }""");
+        Finding claim = llm(Severity.MINOR, POST, 5, "MISSING_CHECK", "b.Post#increaseViewCount", "Post.viewCount");
+
+        Finding grounded = grounder.ground(List.of(claim), context(List.of(POST)), false).get(0);
+
+        assertThat(grounded.grounding().status()).isEqualTo(Status.AI_ONLY);
+        assertThat(grounded.grounding().mark(LayerId.INDEX)).isNotEqualTo(Mark.REFUTED);
+    }
+
+    @Test
+    void ground_missingCheckNamingDtoAccessor_isNotRefuted() throws IOException {
+        // sandbox #7 재리뷰: "category 검증 누락" 의 symbols 가 record 접근자 PostRequest#category 였다
+        writeBoth(REQUEST, """
+                package b;
+                public record PostRequest(String title, String category) {
+                }""");
+        writeBoth(CONTROLLER, """
+                package b;
+                public class PostController {
+                    public String create(PostRequest request) {
+                        return request.category();
+                    }
+                }""");
+        Finding claim = llm(Severity.MAJOR, CONTROLLER, 4, "MISSING_CHECK", "b.PostRequest#category");
+
+        Finding grounded = grounder.ground(List.of(claim), context(List.of(CONTROLLER)), false).get(0);
+
+        assertThat(grounded.grounding().mark(LayerId.INDEX)).isNotEqualTo(Mark.REFUTED);
+    }
+
+    @Test
     void ground_toolAndAiOnSameMethod_confirmEachOther() throws IOException {
         write(base, SERVICE, """
                 package b;

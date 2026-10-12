@@ -259,8 +259,12 @@ public class FindingGrounder {
      * "빠졌다"고 한 호출 · 어노테이션을 연결된 코드에서 찾는다. 연결된 코드 = 지적이 가리키는 메서드, 그 메서드를 부르는 메서드,
      * 지적 파일의 타입을 파라미터로 받는 메서드 (DTO 의 검증처럼 다른 파일에 붙는 것).
      */
-    private static Optional<Layer> missingCheck(List<String> symbols, Finding f, List<MethodInfo> linked,
+    private static Optional<Layer> missingCheck(List<String> claimed, Finding f, List<MethodInfo> linked,
                                                 RepoIndex head, Sources sources) {
+        List<String> symbols = checkSymbols(claimed, f, linked, head);
+        if (symbols.isEmpty()) {
+            return Optional.empty();
+        }
         Map<String, MethodInfo> connected = new LinkedHashMap<>();
         linked.forEach(m -> connected.put(m.id(), m));
         for (MethodInfo m : linked) {
@@ -298,6 +302,45 @@ public class FindingGrounder {
                     + names(absent)));
         }
         return Optional.of(layer(LayerId.INDEX, Mark.RELATED, "일부만 있음: " + names(present) + " · 없음: " + names(absent)));
+    }
+
+    /**
+     * "빠졌다"고 한 이름 중 검사로 볼 수 있는 것만 남긴다. LLM 은 빠진 호출 대신 지적 위치(그 메서드, 그 파일의 타입,
+     * 필드 · record 접근자)를 적기도 하는데, 그런 이름은 당연히 연결된 코드에 있으니 반박의 근거가 될 수 없다.
+     * 남는 것: 어노테이션, 그리고 다른 파일에 선언된 메서드 호출.
+     */
+    static List<String> checkSymbols(List<String> symbols, Finding f, List<MethodInfo> linked, RepoIndex head) {
+        Set<String> linkedNames = linked.stream().map(MethodInfo::name).collect(Collectors.toSet());
+        List<String> result = new ArrayList<>();
+        for (String symbol : symbols) {
+            String s = PARAMS.matcher(symbol.strip()).replaceAll("");
+            if (s.startsWith("@")) {
+                result.add(symbol);
+                continue;
+            }
+            int cut = Math.max(s.lastIndexOf('#'), s.lastIndexOf('.'));
+            String member = s.substring(cut + 1);
+            String typeName = cut < 0 ? null : s.substring(0, cut);
+            if (member.isEmpty() || Character.isUpperCase(member.charAt(0)) || linkedNames.contains(member)) {
+                // 타입 이름이거나 지적이 가리키는 메서드 자신
+                continue;
+            }
+            Optional<TypeInfo> type = typeName == null ? Optional.empty() : findType(typeName, head);
+            if (type.isPresent()) {
+                TypeInfo t = type.get();
+                boolean subject = f.file() != null && f.file().equals(t.file());
+                boolean field = t.fields().containsKey(member) || head.methods().values().stream()
+                        .anyMatch(m -> m.typeFqn().equals(t.fqn()) && m.name().equals(member) && m.implicit());
+                if (subject || field) {
+                    continue;
+                }
+            } else if (typeName == null && f.file() != null && head.typesIn(f.file()).stream()
+                    .anyMatch(t -> t.fields().containsKey(member))) {
+                continue;
+            }
+            result.add(symbol);
+        }
+        return result;
     }
 
     /** 메서드가 이 호출 · 어노테이션을 가지는가. 어노테이션은 파라미터에도 붙으므로 소스로 본다. */
