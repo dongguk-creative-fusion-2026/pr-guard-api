@@ -29,12 +29,14 @@ import org.springframework.stereotype.Component;
  *
  * <ul>
  *   <li>인덱스: 결정적 검사가 같은 곳을 지적했는가, AI 가 "없다"고 한 이름이 head 에 실제로 있는가,
- *       "빠졌다"고 한 검사가 연결된 코드(바뀐 메서드 · 호출부 · 그 타입을 받는 메서드)에 이미 있는가</li>
+ *       "빠졌다"고 한 검사가 연결된 코드(바뀐 메서드 · 호출부 · 그 타입을 받는 메서드)에 있는가</li>
  *   <li>이력: 늘 함께 바뀌던 파일이 빠졌는가, 지운 줄을 만든 커밋, 자주 바뀌는 파일인가</li>
  *   <li>실행: 실행 검증이 같은 파일의 동작 변화를 증명했는가, 테스트가 그 메서드를 지나갔는가</li>
  *   <li>AI: AI 리뷰가 같은 곳을 지적했는가</li>
  * </ul>
- * 인덱스와 어긋나는 AI 지적은 {@link Grounding.Status#REFUTED} 가 되어 판정에서 빠진다.
+ * 판정에서 빼는({@link Grounding.Status#REFUTED}) 것은 결정적인 사실과 어긋날 때뿐이다: "없다"고 한 이름이 head 에 있다.
+ * "빠진 검사"는 AI 가 적는 이름이 들쭉날쭉해서(지적 위치나 다른 검사를 적기도 한다) 연결된 코드에 있어도 반박하지 않고,
+ * 사람이 바로 확인할 수 있게 맥락으로만 남긴다. 정당한 지적을 조용히 빼는 것이 오탐보다 위험하다.
  */
 @Component
 public class FindingGrounder {
@@ -295,7 +297,8 @@ public class FindingGrounder {
             }
         }
         if (absent.isEmpty()) {
-            return Optional.of(layer(LayerId.INDEX, Mark.REFUTED, "연결된 코드에 이미 있음: " + names(present)));
+            return Optional.of(layer(LayerId.INDEX, Mark.RELATED, "연결된 코드에 있음: " + names(present)
+                    + " (AI 가 말한 검사와 같은지 확인)"));
         }
         if (present.isEmpty()) {
             return Optional.of(layer(LayerId.INDEX, Mark.CONFIRMED, "연결된 메서드 " + scope.size() + "개 어디에도 없음: "
