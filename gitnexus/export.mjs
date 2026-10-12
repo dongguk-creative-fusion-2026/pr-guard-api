@@ -24,6 +24,9 @@ const FUNCTION_LABELS = ["Method", "Function", "Constructor"];
 const MAX_COMMITS = 1000;
 // 커밋 제목은 목록에 한 줄로 보여 줄 만큼만 남긴다 (readHistory 가 위쪽 최상위 코드에서 불리므로 여기 둔다)
 const MAX_SUBJECT = 120;
+// 커밋 그래프: 그릴 커밋 수, 다른 브랜치를 받을 깊이
+const MAX_GRAPH_COMMITS = 300;
+const GRAPH_FETCH_DEPTH = 300;
 // 한 번에 많은 파일을 바꾼 커밋(일괄 포맷 · 이름 변경 등)은 "같이 바뀐다"의 근거가 약해서 동시 변경에서 뺀다
 const MAX_FILES_PER_COMMIT = 40;
 const MIN_CO_SUPPORT = 2;
@@ -111,6 +114,8 @@ try {
   // 파일 줄 수와 git 이력 (코드 시티 · 핫스팟 · 숨은 결합)
   for (const node of graph.nodes) node.lines = countLines(join(repo, node.id));
   graph.history = readHistory(repo, new Set(graph.nodes.map((n) => n.id)));
+  // 브랜치 갈래 · 병합이 보이는 커밋 그래프 (모든 브랜치). 실패해도 그래프는 낸다
+  graph.commitGraph = readCommitGraph(repo);
   // 인프라 지도: 요청 경로(client → DNS → Tunnel → 프록시 → 앱)와 DB · 외부 API, 그리고 그걸 쓰는 코드 파일
   await loadYamlLib();
   graph.infra = extractInfra(repo, graph.nodes.map((n) => n.id), rows.routes.filter((r) => r.file));
@@ -148,6 +153,43 @@ function countLines(path) {
  * 최근 커밋의 파일별 변경 통계와, 같이 바뀐 파일 쌍을 센다. 그래프에 있는 파일만.
  * 얕은 clone 이면 가장 오래된 커밋은 레포 전체가 추가된 것처럼 보이므로 뺀다.
  */
+/**
+ * 커밋 그래프: 모든 브랜치의 최근 커밋과 부모 · 가리키는 브랜치. 화면에서 git log --graph 처럼 갈래와 병합을 그린다.
+ * clone 은 기본 브랜치만 받으므로 다른 브랜치를 얕게 더 받는다 (작업 트리 · 인덱스는 그대로).
+ * commits: 최신 → 오래된 순 (topo-order). h = 해시 앞 12자리, p = 부모들, a = authors 번호, refs = 브랜치 이름
+ */
+function readCommitGraph(repoDir) {
+  const git = (...args) => spawnSync("git", ["-C", repoDir, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
+  git("fetch", "--quiet", "--no-tags", `--depth=${GRAPH_FETCH_DEPTH}`, "origin", "+refs/heads/*:refs/remotes/origin/*");
+  const log = git("log", "--topo-order", `-n${MAX_GRAPH_COMMITS}`, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%s%x1f%D", "HEAD", "--remotes=origin");
+  if (log.status !== 0) return null;
+  const head = git("rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  const authors = new Map();
+  const commits = [];
+  for (const line of log.stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const [sha, parents, author, at, subject = "", decoration = ""] = line.split("\x1f");
+    if (!authors.has(author)) authors.set(author, authors.size);
+    const refs = [
+      ...new Set(
+        decoration
+          .split(",")
+          .map((r) => r.trim().replace(/^HEAD -> /, "").replace(/^origin\//, ""))
+          .filter((r) => r && r !== "HEAD" && !r.startsWith("tag:")),
+      ),
+    ];
+    commits.push({
+      h: sha.slice(0, 12),
+      p: parents ? parents.split(" ").map((x) => x.slice(0, 12)) : [],
+      a: authors.get(author),
+      at: Number(at),
+      m: subject.slice(0, MAX_SUBJECT),
+      ...(refs.length ? { refs } : {}),
+    });
+  }
+  return { head, authors: [...authors.keys()], commits };
+}
+
 function readHistory(repoDir, files) {
   const git = (...args) => spawnSync("git", ["-C", repoDir, ...args], { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
   const log = git("log", "--no-merges", "--no-renames", `-n${MAX_COMMITS}`, "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--numstat");
