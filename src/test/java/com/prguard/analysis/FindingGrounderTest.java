@@ -96,8 +96,9 @@ class FindingGrounderTest {
     }
 
     @Test
-    void ground_aiClaimsRemovedOwnerCheck_confirmsWhenNoConnectedMethodCallsIt() throws IOException {
-        // sandbox #18: 삭제에서 작성자 확인을 지웠다
+    void ground_aiClaimsRemovedOwnerCheck_notesTheFactButStaysAiOnly() throws IOException {
+        // sandbox #18: 삭제에서 작성자 확인을 지웠다. 인덱스는 "호출이 없다"는 사실만 확인한다.
+        // 그것이 문제인지는 모른다 (재평가 #23: "테스트가 save 호출을 검증하지 않음" — JPA 는 save 없이도 반영한다)
         write(base, SERVICE, """
                 package b;
                 public class PostService {
@@ -126,7 +127,8 @@ class FindingGrounderTest {
 
         Finding grounded = grounder.ground(List.of(claim), context(List.of(SERVICE)), false).get(0);
 
-        assertThat(grounded.grounding().status()).isEqualTo(Status.CONFIRMED);
+        assertThat(grounded.grounding().status()).isEqualTo(Status.AI_ONLY);
+        assertThat(grounded.grounding().mark(LayerId.INDEX)).isEqualTo(Mark.RELATED);
         assertThat(note(grounded, LayerId.INDEX)).contains("어디에도 없음").contains("requireOwner");
     }
 

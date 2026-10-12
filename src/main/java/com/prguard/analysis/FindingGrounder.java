@@ -34,9 +34,11 @@ import org.springframework.stereotype.Component;
  *   <li>실행: 실행 검증이 같은 파일의 동작 변화를 증명했는가, 테스트가 그 메서드를 지나갔는가</li>
  *   <li>AI: AI 리뷰가 같은 곳을 지적했는가</li>
  * </ul>
- * 판정에서 빼는({@link Grounding.Status#REFUTED}) 것은 결정적인 사실과 어긋날 때뿐이다: "없다"고 한 이름이 head 에 있다.
- * "빠진 검사"는 AI 가 적는 이름이 들쭉날쭉해서(지적 위치나 다른 검사를 적기도 한다) 연결된 코드에 있어도 반박하지 않고,
- * 사람이 바로 확인할 수 있게 맥락으로만 남긴다. 정당한 지적을 조용히 빼는 것이 오탐보다 위험하다.
+ * 인덱스가 확인(CONFIRMED)하는 것은 다른 층이 독립적으로 같은 문제를 찾았을 때뿐이다: 결정적 검사가 같은 곳을 지적했거나,
+ * "없다"고 한 이름이 head 에 정말 없다(컴파일이 깨진다). 판정에서 빼는({@link Grounding.Status#REFUTED}) 것은
+ * "없다"고 한 이름이 head 에 있을 때뿐이다.
+ * "빠진 검사"는 있든 없든 맥락으로만 남긴다. 인덱스는 AI 가 말한 사실(그 호출이 있다 · 없다)만 알려 줄 뿐 그것이 문제인지는
+ * 모른다 (예: JPA 는 save 없이도 변경을 반영한다). 또 AI 가 적는 이름이 들쭉날쭉해서 정당한 지적을 잘못 뺄 수 있다.
  */
 @Component
 public class FindingGrounder {
@@ -301,8 +303,9 @@ public class FindingGrounder {
                     + " (AI 가 말한 검사와 같은지 확인)"));
         }
         if (present.isEmpty()) {
-            return Optional.of(layer(LayerId.INDEX, Mark.CONFIRMED, "연결된 메서드 " + scope.size() + "개 어디에도 없음: "
-                    + names(absent)));
+            // 사실 확인일 뿐 문제라는 확인은 아니다
+            return Optional.of(layer(LayerId.INDEX, Mark.RELATED, "연결된 메서드 " + scope.size() + "개 어디에도 없음: "
+                    + names(absent) + " (AI 가 말한 사실은 맞음)"));
         }
         return Optional.of(layer(LayerId.INDEX, Mark.RELATED, "일부만 있음: " + names(present) + " · 없음: " + names(absent)));
     }
