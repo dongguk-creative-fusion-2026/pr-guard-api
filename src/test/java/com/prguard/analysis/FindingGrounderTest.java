@@ -72,8 +72,9 @@ class FindingGrounderTest {
     }
 
     @Test
-    void ground_aiClaimsMissingValidationThatCallerHasOnParameter_refutes() throws IOException {
-        // sandbox #20: DTO 에 @Size 를 달았더니 "@Valid 가 있는지 확인 필요" — 컨트롤러 파라미터에 이미 있다
+    void ground_aiClaimsMissingValidationThatCallerHasOnParameter_showsWhereItIsButKeepsFinding() throws IOException {
+        // sandbox #20: DTO 에 @Size 를 달았더니 "@Valid 가 있는지 확인 필요" — 컨트롤러 파라미터에 이미 있다.
+        // 빠진 검사는 AI 가 적는 이름이 들쭉날쭉해서 반박하지 않고, 어디 있는지만 보여 준다
         writeBoth(REQUEST, """
                 package b;
                 public record PostRequest(String title, String content) {
@@ -89,7 +90,8 @@ class FindingGrounderTest {
 
         Finding grounded = grounder.ground(List.of(claim), context(List.of(REQUEST)), false).get(0);
 
-        assertThat(grounded.grounding().status()).isEqualTo(Status.REFUTED);
+        assertThat(grounded.grounding().status()).isEqualTo(Status.AI_ONLY);
+        assertThat(grounded.grounding().mark(LayerId.INDEX)).isEqualTo(Mark.RELATED);
         assertThat(note(grounded, LayerId.INDEX)).contains("@Valid").contains("PostController#create");
     }
 
