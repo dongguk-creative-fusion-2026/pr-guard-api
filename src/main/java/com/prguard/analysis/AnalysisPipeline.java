@@ -432,8 +432,14 @@ public class AnalysisPipeline {
     private static List<Map<String, Object>> findingViews(List<Finding> findings) {
         return findings.stream().limit(20)
                 .map(f -> data("severity", f.severity().name(), "ruleId", f.ruleId(), "title", f.title(),
-                        "file", f.file(), "line", f.line(), "category", f.category().name(), "kind", kindOf(f)))
+                        "file", f.file(), "line", f.line(), "category", f.category().name(), "kind", kindOf(f),
+                        "evidence", clip(f.evidence())))
                 .toList();
+    }
+
+    /** 단계 기록에 싣는 증거는 짧게 */
+    private static String clip(String evidence) {
+        return evidence == null || evidence.length() <= 300 ? evidence : evidence.substring(0, 300) + "…";
     }
 
     private static String kindOf(Finding f) {
