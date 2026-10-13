@@ -36,6 +36,8 @@ import org.springframework.stereotype.Component;
 public class ReviewWorker {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewWorker.class);
+    /** 단계 기록에 싣는 변경 파일 경로 수 (화면 연출용) */
+    private static final int MAX_EVENT_PATHS = 50;
 
     private final ReviewRepository reviews;
     private final ProjectRepository projects;
@@ -112,6 +114,7 @@ public class ReviewWorker {
                             "files", files.size(),
                             "additions", files.stream().mapToInt(ChangedFile::additions).sum(),
                             "deletions", files.stream().mapToInt(ChangedFile::deletions).sum(),
+                            "paths", files.stream().map(ChangedFile::filename).limit(MAX_EVENT_PATHS).toList(),
                             "commits", pull.commitMessages().size(),
                             "hasBody", pull.body() != null && !pull.body().isBlank(),
                             "ms", System.currentTimeMillis() - collectStarted));
