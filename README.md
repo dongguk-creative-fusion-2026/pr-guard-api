@@ -29,8 +29,10 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   ├ RepoWorkspace   레포 clone → base(merge-base) / head worktree
   │   ├ JavaIndexer     양쪽 소스 인덱스 (타입 · 메서드 · 어노테이션 · 호출 관계) → 바뀐 메서드
   │   ├ GitHistoryLoader 최근 커밋 이력 · 동시 변경 통계 · 바뀐 라인의 blame
-  │   ├ Analyzer 들     결정적 검사 (base 에도 있던 문제는 제외)
-  │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달)
+  │   ├ Analyzer 들     결정적 검사, 분류(A~D)별로 나란히 실행 (아래 "결정적 검사")
+  │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달). 위 검사와 동시에 돈다
+  │   │                 지적마다 kind(MISSING_SYMBOL · MISSING_CHECK · SECURITY …)와 근거 이름을 받고,
+  │   │                 kind 가 SECURITY 면 분류를 C(보안)로 둔다
   │   ├ TestRunService  실행 검증 (EXEC_RUNNER 가 켜져 있으면, 소스 준비 직후 나란히 시작)
   │   │   ├ 쿠버네티스 Job 으로 base · head 러너(runner/) 기동 → clone · 빌드 · 테스트 → JUnit 결과 콜백
   │   │   ├ EvidenceService  본문만 바뀐 메서드마다 "base 통과 · head 실패" 증거 테스트 생성 → 러너가 받아 함께 실행
@@ -46,13 +48,32 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   └ PR: 요약 코멘트 1개(계속 수정) + 라인 코멘트(같은 지적은 한 번만)
 ```
 
+단계마다 진행 · 결과를 `review_events` 에 남기고 `GET /api/reviews/{id}/events` 로 실시간(SSE) 보낸다. 화면의 파이프라인 · 리뷰 장면이 이 기록을 쓴다. 수집 단계에는 바뀐 파일 경로(최대 50개)를, 검사 · LLM · 근거 확인 단계에는 지적마다 분류 · kind · 증거(300자까지)를 싣는다.
+
 단계가 실패해도 가능한 데까지 진행한다. 예를 들어 clone 이 실패하면 diff 만으로 리뷰하고, 이유는 요약 코멘트의 "분석 정보"에 남는다.
+
+## 결정적 검사
+
+AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확인한 지적(CONFIRMED)이 된다. A(의도 대비)는 아직 결정적 검사가 없어 LLM 리뷰가 맡는다.
+
+| 분류 | 검사기 | 지적 | 심각도 |
+|---|---|---|---|
+| B · 영향 | `reference-check` | `UNRESOLVED_METHOD` 레포 안 타입에 없는 메서드 호출, `ARITY_MISMATCH` 인자 수가 어떤 선언과도 맞지 않음. base 에도 있던 것은 제외 (`SnapshotAnalyzer`) | BLOCKER |
+| B · 영향 | `ast-behavior` | AST diff(GumTree): `AST_THROW_TO_NULL` 예외 → null 반환, `AST_NULL_CHECK_REMOVED`, `AST_EXCEPTION_SWALLOWED` 빈 catch, `AST_EXCEPTION_REMOVED` | MAJOR (예외 경로 삭제는 MINOR) |
+| C · 보안 | `auth-removal` | `AST_AUTH_REMOVED` 메서드의 권한 어노테이션(@PreAuthorize · @Secured …)이 사라짐 | BLOCKER |
+| C · 보안 | `hardcoded-secret` | `HARDCODED_SECRET` 이번 PR 이 추가한 줄의 비밀값. 알려진 키 형식(AWS · GitHub · OpenAI · Slack · Google · 개인키)은 BLOCKER, 이름이 SECRET · TOKEN · PASSWORD · API_KEY … 인 상수 · 설정에 값을 직접 넣으면 MAJOR. `${...}` 주입 · 헤더 이름 · 테스트 코드 제외, 증거에는 값 앞 4자만 | BLOCKER / MAJOR |
+| D · 위험도 | `architecture-delta` | base · head 인덱스의 파일 간 의존을 비교해 이번 PR 이 만든 의존만 본다. `ARCH_LAYER_BYPASS` 웹이 서비스를 건너뛰고 저장소를 바로 부름(프로젝트가 평소 서비스를 거칠 때만), `ARCH_REVERSE_DEPENDENCY` 아래 계층이 위 계층을 부름, `ARCH_NEW_MODULE_DEPENDENCY` 의존하지 않던 두 모듈 사이 새 의존. 증거는 "출발 파일 → 도착 파일" | MAJOR |
+
+실행 검증이 켜져 있으면 `EXEC_*` 지적(회귀 · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화 · 테스트가 안 지나간 변경)이 더해진다.
 
 ## 패키지
 
 | 패키지 | 역할 |
 |---|---|
 | `github` | GitHub REST 클라이언트, 레포 URL 파싱 |
+| `events` | 리뷰 단계 기록(`Stage` · `ReviewEvent`), 저장과 SSE 중계(`ReviewEventBus`, `ReviewEventController`) |
+| `ast` | base · head 메서드의 AST diff (GumTree, `AstDiffer`) → 편집 · 위험 신호 |
+| `agents` | AI 에이전트 규칙(AGENTS.md): 레포의 규칙 파일 확인, 초안 · PR 생성, 리뷰 지적을 실수 유형 12가지로 묶은 피드백(`LessonService`, `MistakeType`) |
 | `project` / `pull` | 프로젝트 등록, PR 상태 저장 |
 | `workspace` | 레포 clone, PR 별 base/head worktree, 그래프용 브랜치 worktree, git 실행 |
 | `execution` | 실행 검증: base · head 에서 테스트를 실제로 돌려 회귀 찾기 (쿠버네티스 Job · 로컬 docker), 러너 콜백, 증거 테스트 판정(`EvidenceVerdict`), 호출 기록 병합(`Trace`). `deploy/k8s/README.md` |
@@ -62,7 +83,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
 | `diff` | GitHub patch 해석 (hunk, 추가·삭제 라인, 라인 코멘트 가능 라인) |
 | `analysis` | 지적 사항 모델(`Finding`), 검사기(`Analyzer`, `SnapshotAnalyzer`), 파이프라인, 근거 확인(`FindingGrounder`, `Grounding`), 판정 |
-| `analysis.rules` | 검사 규칙. 지금은 레포 인덱스 기반 참조 검사(`ReferenceCheckAnalyzer`) |
+| `analysis.rules` | 결정적 검사 규칙 (위 "결정적 검사" 표) |
 | `review` | LLM 리뷰어(`Reviewer`: OpenAI / stats-only), 리뷰 작업 저장 |
 | `report` | 요약·라인 코멘트 본문과 게시 |
 | `pipeline` | 폴링과 리뷰 워커 |
@@ -96,6 +117,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | POST | `/api/projects/{id}/pulls/{number}/reviews` | 현재 커밋 다시 리뷰 (run 증가) |
 | GET | `/api/projects/{id}/reviews?limit=20` | 리뷰 기록 (판정, 지적 수) |
 | GET | `/api/reviews/{id}` | 리뷰 + 지적 사항(층별 근거 `grounding` 포함) + 분석 재료 요약(`context`) |
+| GET | `/api/reviews/{id}/events` | 리뷰 단계 기록. `Accept: text/event-stream` 이면 저장된 기록 뒤에 진행 중 단계를 이어 보낸다(SSE), JSON 이면 한 번에 |
 | GET | `/api/projects/{id}/graph` | 레포 의존성 그래프 (상태, 기준 커밋, `graph`: 파일 노드·의존 간선·커뮤니티) |
 | POST | `/api/projects/{id}/graph` | 기본 브랜치 최신 커밋으로 그래프 다시 만들기 (202) |
 | GET | `/api/projects/{id}/repo` | GitHub 레포 정보 (설명, 언어 구성, 크기 …) — 등록 화면 |
@@ -103,6 +125,9 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 | POST | `/api/projects/{id}/onboarded` | 등록 화면(온보딩)을 끝냄 |
 | POST | `/api/projects/{id}/graph/progress` | 그래프 워크플로가 진행 단계를 알린다 (`{runId, stage, message, data}`) |
 | POST | `/api/projects/{id}/graph/result` | 그래프 워크플로가 결과를 보낸다 (`{runId, commitSha, graph}` 또는 `{runId, error}`) |
+| GET | `/api/projects/{id}/agents-md` | 레포의 AI 에이전트 규칙 파일 상태와 분석 기반 초안 |
+| GET | `/api/projects/{id}/agents-md/lessons` | 리뷰에서 반복된 실수 유형과 제안 규칙 |
+| POST | `/api/projects/{id}/agents-md/pull` | `{ content }` 규칙 초안을 대상 레포에 PR 로 올림 |
 | GET | `/api/reviews/{id}/test-runs` | 리뷰의 실행 검증 기록 (base · head) |
 | GET | `/api/reviews/{id}/runtime` | 리뷰의 런타임 호출 기록 `{base, head}` |
 | GET | `/api/projects/{id}/runtime` | 프로젝트의 가장 최근 head 호출 기록 (코드 그래프 · 시티 오버레이). 없으면 204 |
@@ -136,11 +161,18 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | `GITHUB_TOKEN` | (없음) | 코멘트를 다는 봇 계정 PAT. 없으면 읽기만 한다 (rate limit 60/h) |
 | `GITHUB_COMMENT_ENABLED` | `true` | `false` 면 토큰이 있어도 코멘트를 달지 않는다 (로컬 개발용) |
 | `OPENAI_API_KEY` | (없음) | 없으면 LLM 리뷰 없이 정적 분석만 |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Responses API 모델 |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Responses API 모델 (리뷰 · 증거 테스트) |
 | `POLL_INTERVAL` | `PT5M` | 폴링 주기 (ISO-8601) |
+| `REVIEW_WORKER_DELAY` | `PT10S` | 대기 중인 리뷰를 집는 간격 |
+| `REVIEW_MAX_PATCH_CHARS` | `60000` | 리뷰어에 넘기는 patch 총 길이 상한 (문자 수) |
+| `WEB_URL` | `https://pr-guard-web.vercel.app` | PR 코멘트의 "분석 과정 보기" 링크 대상 |
 | `WORKSPACE_DIR` | `{tmp}/prguard` | clone·worktree 위치 |
 | `WORKSPACE_MAX_REPO_KB` | `300000` | 이보다 큰 레포는 clone 하지 않고 diff 만 분석 |
 | `EXEC_RUNNER` | `none` | 실행 검증. `kubernetes` · `docker` 면 켜진다 (설정은 `deploy/k8s/README.md`) |
+| `EXEC_CALLBACK_URL` | `http://localhost:8080` | 러너가 진행 · 결과를 보낼 이 API 주소 (러너 쪽에서 닿는 주소) |
+| `EXEC_IMAGE` | `ghcr.io/dongguk-creative-fusion-2026/pr-guard-test-runner:latest` | 러너 이미지 (`runner/`) |
+| `EXEC_NAMESPACE` · `EXEC_RUNTIME_CLASS` | `prguard-runs` · (없음) | 쿠버네티스 Job 네임스페이스, 격리 런타임 (예: gvisor) |
+| `EXEC_CPU` · `EXEC_MEMORY` · `EXEC_TIMEOUT` | `2` · `3Gi` · `PT15M` | 러너 하나의 자원과 제한 시간 |
 | `EVIDENCE_ENABLED` | `true` | 실행 검증이 켜져 있을 때 증거 테스트를 만들지 (`OPENAI_API_KEY` 필요) |
 | `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
 | `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
