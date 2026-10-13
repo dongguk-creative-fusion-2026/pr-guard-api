@@ -257,7 +257,8 @@ public class AnalysisPipeline {
                     "refuted", refuted,
                     "findings", grounded.stream().limit(20)
                             .map(f -> data("severity", f.severity().name(), "title", f.title(), "file", f.file(),
-                                    "line", f.line(), "status", f.grounding().status().name(),
+                                    "line", f.line(), "category", f.category().name(), "kind", kindOf(f),
+                                    "status", f.grounding().status().name(),
                                     "layers", f.grounding().layers()))
                             .toList(),
                     "ms", System.currentTimeMillis() - t));
@@ -431,8 +432,12 @@ public class AnalysisPipeline {
     private static List<Map<String, Object>> findingViews(List<Finding> findings) {
         return findings.stream().limit(20)
                 .map(f -> data("severity", f.severity().name(), "ruleId", f.ruleId(), "title", f.title(),
-                        "file", f.file(), "line", f.line()))
+                        "file", f.file(), "line", f.line(), "category", f.category().name(), "kind", kindOf(f)))
                 .toList();
+    }
+
+    private static String kindOf(Finding f) {
+        return f.grounding() == null ? null : f.grounding().kind();
     }
 
     private static long count(List<Finding> findings, Severity severity) {
@@ -516,6 +521,11 @@ public class AnalysisPipeline {
                 .toList();
     }
 
+    /** LLM 지적의 분류: 보안이라고 주장한 지적은 보안, 나머지는 일반 */
+    static Category categoryOf(String kind) {
+        return "SECURITY".equals(kind) ? Category.SECURITY : Category.GENERAL;
+    }
+
     /** LLM 지적을 검증한다: 바뀐 파일이 아니면 버리고, 라인이 diff 밖이면 라인을 지운다. */
     private static List<Finding> toFindings(LlmReview llm, AnalysisContext ctx) {
         List<Finding> result = new ArrayList<>();
@@ -532,7 +542,7 @@ public class AnalysisPipeline {
             }
             Integer line = item.line() != null && file.patch().commentableLines().contains(item.line())
                     ? item.line() : null;
-            result.add(new Finding("LLM_REVIEW", Category.GENERAL, severity, file.filename(), line, item.title(),
+            result.add(new Finding("LLM_REVIEW", categoryOf(item.kind()), severity, file.filename(), line, item.title(),
                     item.message(), null, item.title().strip().toLowerCase(Locale.ROOT), Finding.LLM,
                     Grounding.claim(item.kind(), item.symbols())));
         }
