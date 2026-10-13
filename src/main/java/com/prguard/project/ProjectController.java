@@ -47,7 +47,7 @@ public class ProjectController {
 
     @PatchMapping("/{id}/settings")
     public Project updateSettings(@PathVariable long id, @RequestBody SettingsRequest request) {
-        return service.updateSettings(id, request.commentEnabled(), request.majorThreshold());
+        return service.updateSettings(id, request.commentEnabled(), request.majorThreshold(), request.execEnabled());
     }
 
     /** 등록 화면(온보딩)을 끝까지 보거나 건너뛰었다 */
@@ -65,7 +65,10 @@ public class ProjectController {
     public record RegisterRequest(@NotBlank String url) {
     }
 
-    /** @param majorThreshold null 이면 서버 기본값 */
-    public record SettingsRequest(boolean commentEnabled, Integer majorThreshold) {
+    /**
+     * @param majorThreshold null 이면 서버 기본값
+     * @param execEnabled    실행 검증 (null 이면 그대로)
+     */
+    public record SettingsRequest(boolean commentEnabled, Integer majorThreshold, Boolean execEnabled) {
     }
 }

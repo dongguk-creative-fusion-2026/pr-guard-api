@@ -105,7 +105,16 @@ public class AnalysisPipeline {
     /** @param reviewId 실행 검증 기록을 묶을 리뷰 (평가 등 리뷰 없이 돌릴 때는 null) */
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold,
                               Long reviewId) {
+        return run(pull, files, repoKb, sink, majorThreshold, reviewId, true);
+    }
+
+    /**
+     * @param execEnabled 프로젝트가 실행 검증을 켰나. 서버에 실행 환경이 있고 이것도 켜져 있어야 테스트를 돌린다
+     */
+    public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold,
+                              Long reviewId, boolean execEnabled) {
         long started = System.currentTimeMillis();
+        boolean exec = testRuns.enabled() && execEnabled;
         AnalysisContext ctx = new AnalysisContext(pull, files);
         Checkout checkout = null;
         CompletableFuture<List<Finding>> execution = CompletableFuture.completedFuture(List.of());
@@ -115,8 +124,12 @@ public class AnalysisPipeline {
         try {
             checkout = prepare(ctx, repoKb, sink);
             // 실행 검증(base · head 테스트)은 오래 걸리고 다른 분석 결과를 쓰지 않으므로 소스가 준비되면 바로 시작한다
-            if (checkout == null) {
-                testRuns.skipAll(sink, testRuns.enabled() ? "소스가 없어 건너뜀" : "실행 환경 준비 중");
+            if (!testRuns.enabled()) {
+                testRuns.skipAll(sink, "실행 환경 준비 중");
+            } else if (!execEnabled) {
+                testRuns.skipAll(sink, "프로젝트 설정에서 실행 검증 꺼짐");
+            } else if (checkout == null) {
+                testRuns.skipAll(sink, "소스가 없어 건너뜀");
             } else {
                 Checkout source = checkout;
                 execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink, plan),
@@ -124,7 +137,7 @@ public class AnalysisPipeline {
             }
             if (checkout != null) {
                 index(ctx, checkout, sink);
-                if (testRuns.enabled()) {
+                if (exec) {
                     // LLM 으로 테스트를 쓰는 동안 이력 · 검사는 계속 진행한다
                     planning = CompletableFuture.runAsync(() -> plan.complete(evidence.plan(ctx, sink)), executor)
                             .exceptionally(e -> {
@@ -162,7 +175,7 @@ public class AnalysisPipeline {
             findings.addAll(execution.join());
             planning.join();
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
-            List<Finding> grounded = ground(findings, ctx, sink);
+            List<Finding> grounded = ground(findings, ctx, sink, exec);
 
             Verdict verdict = verdictPolicy.decide(grounded, majorThreshold);
             List<Finding> counted = grounded.stream().filter(f -> !f.refuted()).toList();
@@ -240,11 +253,11 @@ public class AnalysisPipeline {
     }
 
     /** 근거 확인. 실패해도 지적은 그대로 두고 판정을 계속한다. */
-    private List<Finding> ground(List<Finding> findings, AnalysisContext ctx, EventSink sink) {
+    private List<Finding> ground(List<Finding> findings, AnalysisContext ctx, EventSink sink, boolean exec) {
         long t = System.currentTimeMillis();
         sink.running(Stage.GROUND, "지적 " + findings.size() + "건");
         try {
-            List<Finding> grounded = grounder.ground(findings, ctx, testRuns.enabled());
+            List<Finding> grounded = grounder.ground(findings, ctx, exec);
             Map<Grounding.Status, Long> byStatus = new EnumMap<>(Grounding.Status.class);
             grounded.forEach(f -> byStatus.merge(f.grounding().status(), 1L, Long::sum));
             long confirmed = byStatus.getOrDefault(Grounding.Status.CONFIRMED, 0L);

@@ -13,7 +13,7 @@ public class ProjectRepository {
                    (SELECT count(*) FROM pull_requests pr
                      WHERE pr.project_id = p.id AND pr.state = 'open')::int AS open_pull_count,
                    p.last_polled_at, p.last_poll_error, p.created_at,
-                   p.comment_enabled, p.major_threshold, p.onboarded_at
+                   p.comment_enabled, p.major_threshold, p.onboarded_at, p.exec_enabled
               FROM projects p
             """;
 
@@ -55,11 +55,12 @@ public class ProjectRepository {
                 .optional();
     }
 
-    public void updateSettings(long id, boolean commentEnabled, Integer majorThreshold) {
-        jdbc.sql("UPDATE projects SET comment_enabled = :comment, major_threshold = CAST(:threshold AS INT) WHERE id = :id")
+    public void updateSettings(long id, boolean commentEnabled, Integer majorThreshold, boolean execEnabled) {
+        jdbc.sql("UPDATE projects SET comment_enabled = :comment, major_threshold = CAST(:threshold AS INT), exec_enabled = :exec WHERE id = :id")
                 .param("id", id)
                 .param("comment", commentEnabled)
                 .param("threshold", majorThreshold)
+                .param("exec", execEnabled)
                 .update();
     }
 
