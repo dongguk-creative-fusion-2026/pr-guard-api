@@ -70,6 +70,11 @@ public class TestRunService {
         return props.enabled();
     }
 
+    /** none · kubernetes · docker */
+    public String runnerName() {
+        return props.runner().name().toLowerCase(java.util.Locale.ROOT);
+    }
+
     /** 쿠버네티스 접속은 처음 쓸 때 만든다 (꺼져 있거나 설정이 없어도 서버는 뜨게) */
     private TestRunner runner() {
         if (runner == null) {

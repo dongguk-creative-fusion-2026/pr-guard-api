@@ -76,12 +76,13 @@ public class ProjectService {
                 repo.defaultBranch(), github.getLanguages(project.ref()));
     }
 
-    public Project updateSettings(long id, boolean commentEnabled, Integer majorThreshold) {
-        get(id);
+    /** @param execEnabled null 이면 지금 값을 그대로 둔다 */
+    public Project updateSettings(long id, boolean commentEnabled, Integer majorThreshold, Boolean execEnabled) {
+        Project current = get(id);
         if (majorThreshold != null && (majorThreshold < 1 || majorThreshold > 20)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_SETTINGS", "판정 기준은 1~20 사이여야 합니다");
         }
-        projects.updateSettings(id, commentEnabled, majorThreshold);
+        projects.updateSettings(id, commentEnabled, majorThreshold, execEnabled != null ? execEnabled : current.execEnabled());
         return get(id);
     }
 

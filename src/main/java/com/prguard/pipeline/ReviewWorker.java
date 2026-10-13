@@ -119,7 +119,7 @@ public class ReviewWorker {
                             "hasBody", pull.body() != null && !pull.body().isBlank(),
                             "ms", System.currentTimeMillis() - collectStarted));
 
-            AnalysisResult result = pipeline.run(pull, files, repoKb, sink, project.majorThreshold(), review.id());
+            AnalysisResult result = pipeline.run(pull, files, repoKb, sink, project.majorThreshold(), review.id(), project.execEnabled());
             String comment = renderer.render(review.headSha(), files, result,
                     links.reviewUrl(project.id(), review.id()));
 

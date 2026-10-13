@@ -13,6 +13,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -38,10 +39,18 @@ public class TestRunController {
 
     private final TestRunRepository runs;
     private final ObjectMapper mapper;
+    private final TestRunService service;
 
-    public TestRunController(TestRunRepository runs, ObjectMapper mapper) {
+    public TestRunController(TestRunRepository runs, ObjectMapper mapper, TestRunService service) {
         this.runs = runs;
         this.mapper = mapper;
+        this.service = service;
+    }
+
+    /** 이 서버에 실행 환경(쿠버네티스 · docker)이 연결돼 있나. 화면이 프로젝트 설정의 실행 검증 스위치 옆에 보여 준다 */
+    @GetMapping("/api/execution")
+    public Map<String, Object> execution() {
+        return Map.of("available", service.enabled(), "runner", service.runnerName());
     }
 
     /** 리뷰의 실행 기록 (화면의 실행 검증 상세) */

@@ -15,7 +15,8 @@ public record Project(
         OffsetDateTime createdAt,
         boolean commentEnabled,
         Integer majorThreshold,
-        OffsetDateTime onboardedAt) {
+        OffsetDateTime onboardedAt,
+        boolean execEnabled) {
 
     public RepoRef ref() {
         return new RepoRef(owner, name);
