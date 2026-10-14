@@ -36,6 +36,8 @@ public class TestRunController {
     /** 결과에 남길 테스트 케이스 수 상한 (큰 레포에서 행이 너무 커지지 않게) */
     private static final int MAX_CASES = 5000;
     private static final int MAX_LOG = 20_000;
+    private static final java.util.regex.Pattern CLASS_NAME = java.util.regex.Pattern.compile(
+            "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$");
 
     private final TestRunRepository runs;
     private final ObjectMapper mapper;
@@ -118,6 +120,31 @@ public class TestRunController {
         return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body.toString());
     }
 
+    /**
+     * 러너가 증거 테스트 다음에 받아 가는 실행 범위. 202 = 아직 고르는 중, 204 = 전체 실행,
+     * 200 = 한 줄에 하나씩 돌릴 테스트 클래스 (빈 본문이면 레포 테스트는 하나도 돌리지 않고 컴파일 · 증거 테스트만)
+     */
+    @GetMapping("/api/test-runs/{id}/selection")
+    public ResponseEntity<String> selection(@PathVariable long id, @RequestHeader("X-Run-Token") String token) {
+        authorize(id, token);
+        String state = runs.selectionState(id);
+        if ("PENDING".equals(state)) {
+            return ResponseEntity.accepted().build();
+        }
+        if (!"FILTER".equals(state)) {
+            return ResponseEntity.noContent().build();
+        }
+        StringBuilder body = new StringBuilder();
+        for (JsonNode c : tree(runs.testFilter(id))) {
+            String name = c.asText();
+            // 러너가 빌드 도구 인자로 쓴다. 클래스 이름이 아닌 것은 넘기지 않는다
+            if (CLASS_NAME.matcher(name).matches()) {
+                body.append(name).append('\n');
+            }
+        }
+        return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body.toString());
+    }
+
     /** @param phase cloning, building … */
     public record Progress(String phase, String message) {
     }
@@ -168,6 +195,11 @@ public class TestRunController {
             runs.saveTrace(id, merged.isEmpty() ? null : json(merged.toJson()), limit(evidenceDropped, 40));
         }
         String logTail = log == null ? null : tail(new String(log.getBytes(), StandardCharsets.UTF_8));
+        if ((report == null || report.isEmpty()) && exitCode == 0 && "FILTER".equals(runs.selectionState(id))) {
+            // 영향 있는 테스트가 없어 레포 테스트를 하나도 돌리지 않았다 (컴파일은 통과)
+            runs.complete(id, exitCode, 0, 0, 0, 0, "[]", logTail);
+            return;
+        }
         if (report == null || report.isEmpty()) {
             runs.fail(id, error != null && !error.isBlank() ? limit(error, 300)
                     : "테스트 보고서가 없음 (빌드 실패 · 종료 코드 " + exitCode + ")", exitCode, logTail);

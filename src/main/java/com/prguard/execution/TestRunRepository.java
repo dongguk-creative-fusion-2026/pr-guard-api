@@ -12,7 +12,7 @@ public class TestRunRepository {
     private static final String SELECT = """
             SELECT id, review_id, side, sha, status, token_hash, runner_name, phase, message, exit_code,
                    tests, failures, errors, skipped, results::text AS results, log_tail, error, created_at, finished_at,
-                   extra_state, evidence_dropped
+                   extra_state, evidence_dropped, selection_state, selection::text AS selection
               FROM test_runs
             """;
 
@@ -24,8 +24,8 @@ public class TestRunRepository {
 
     public long create(Long reviewId, String side, String sha, String tokenHash) {
         return jdbc.sql("""
-                        INSERT INTO test_runs (review_id, side, sha, status, token_hash)
-                        VALUES (:reviewId, :side, :sha, 'QUEUED', :tokenHash)
+                        INSERT INTO test_runs (review_id, side, sha, status, token_hash, selection_state)
+                        VALUES (:reviewId, :side, :sha, 'QUEUED', :tokenHash, 'PENDING')
                         RETURNING id
                         """)
                 .param("reviewId", reviewId)
@@ -96,12 +96,13 @@ public class TestRunRepository {
                 .query(String.class).optional().orElse(null);
     }
 
-    /** 프로젝트에서 호출 기록이 있는 가장 최근 head 실행 */
+    /** 프로젝트에서 호출 기록이 있는 가장 최근 head 실행. 일부 테스트만 돈 실행은 기록이 모자라 뺀다 */
     public Optional<LatestTrace> latestTrace(long projectId) {
         return jdbc.sql("""
                         SELECT t.id AS run_id, r.id AS review_id, r.pr_number, t.sha, t.finished_at, t.trace::text AS trace
                           FROM test_runs t JOIN reviews r ON r.id = t.review_id
                          WHERE r.project_id = :projectId AND t.side = 'HEAD' AND t.trace IS NOT NULL
+                           AND t.selection_state = 'ALL'
                          ORDER BY t.id DESC LIMIT 1
                         """)
                 .param("projectId", projectId)
@@ -111,6 +112,53 @@ public class TestRunRepository {
 
     public record LatestTrace(long runId, long reviewId, int prNumber, String sha, OffsetDateTime finishedAt,
                               String trace) {
+    }
+
+    /**
+     * 영향 테스트 선택의 기준 기록: 같은 프로젝트에서 전체 테스트를 돌려 호출 기록이 남은 가장 최근 실행.
+     * 이번 PR 의 base 커밋과 같은 커밋의 기록이 있으면 그것을 먼저 쓴다
+     */
+    public Optional<ReferenceRun> reference(long reviewId, String baseSha) {
+        return jdbc.sql("""
+                        SELECT t.id AS run_id, r.pr_number, t.sha, t.finished_at, t.trace::text AS trace,
+                               t.results::text AS results, t.tests
+                          FROM test_runs t JOIN reviews r ON r.id = t.review_id
+                         WHERE r.project_id = (SELECT project_id FROM reviews WHERE id = :reviewId)
+                           AND t.status = 'DONE' AND t.trace IS NOT NULL AND t.selection_state = 'ALL'
+                           AND t.review_id <> :reviewId
+                         ORDER BY (t.sha = :baseSha) DESC, t.id DESC LIMIT 1
+                        """)
+                .param("reviewId", reviewId)
+                .param("baseSha", baseSha)
+                .query(ReferenceRun.class)
+                .optional();
+    }
+
+    public record ReferenceRun(long runId, Integer prNumber, String sha, OffsetDateTime finishedAt, String trace,
+                               String results, Integer tests) {
+    }
+
+    /** 러너가 받아 갈 실행 범위. state: ALL(전체) | FILTER(filterJson 의 클래스만) */
+    public void setSelection(long id, String state, String filterJson, String selectionJson) {
+        jdbc.sql("""
+                        UPDATE test_runs SET selection_state = :state, test_filter = CAST(:filter AS jsonb),
+                                             selection = CAST(:selection AS jsonb)
+                         WHERE id = :id
+                        """)
+                .param("id", id)
+                .param("state", state)
+                .param("filter", filterJson)
+                .param("selection", selectionJson)
+                .update();
+    }
+
+    public String selectionState(long id) {
+        return jdbc.sql("SELECT selection_state FROM test_runs WHERE id = :id").param("id", id).query(String.class).single();
+    }
+
+    public String testFilter(long id) {
+        return jdbc.sql("SELECT test_filter::text FROM test_runs WHERE id = :id").param("id", id)
+                .query(String.class).optional().orElse(null);
     }
 
     public void saveTrace(long id, String traceJson, String evidenceDropped) {

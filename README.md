@@ -41,6 +41,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   │                 kind 가 SECURITY 면 분류를 C(보안)로 둔다
   │   ├ TestRunService  실행 검증 (EXEC_RUNNER 가 켜져 있으면, 소스 준비 직후 나란히 시작)
   │   │   ├ 쿠버네티스 Job 으로 base · head 러너(runner/) 기동 → clone · 빌드 · 테스트 → JUnit 결과 콜백
+  │   │   ├ TestSelector     영향 테스트 선택: 바뀐 메서드를 지나가는 테스트 클래스만 base · head 에서 돌린다 (아래 "영향 테스트 선택")
   │   │   ├ EvidenceService  본문만 바뀐 메서드마다 "base 통과 · head 실패" 증거 테스트 생성 → 러너가 받아 함께 실행
   │   │   ├ trace-agent      테스트 중 실제 호출 기록 (호출 횟수 · 간선 · 테스트별로 지나간 함수)
   │   │   └ 비교: 회귀(BLOCKER) · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화(MAJOR) · 테스트가 안 지나간 변경(MINOR)
@@ -57,6 +58,21 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 단계마다 진행 · 결과를 `review_events` 에 남기고 `GET /api/reviews/{id}/events` 로 실시간(SSE) 보낸다. 화면의 파이프라인 · 리뷰 장면이 이 기록을 쓴다. 수집 단계에는 바뀐 파일 경로(최대 50개)를, 검사 · LLM · 근거 확인 단계에는 지적마다 분류 · kind · 증거(300자까지)를 싣는다.
 
 단계가 실패해도 가능한 데까지 진행한다. 예를 들어 clone 이 실패하면 diff 만으로 리뷰하고, 이유는 요약 코멘트의 "분석 정보"에 남는다.
+
+## 영향 테스트 선택
+
+실행 검증은 PR 마다 base · head 에서 테스트를 돌린다. 전체를 돌리면 느리고 비싸서, **이번 PR 이 바꾼 코드를 지나가는 테스트만** 고른다 (Test Impact Analysis).
+
+1. **기준 기록**: 같은 프로젝트에서 전체 테스트를 돌린 가장 최근 실행의 호출 기록(trace-agent: 테스트 → 지나간 메서드). 이번 base 와 같은 커밋의 기록을 먼저 쓴다.
+2. **바뀐 메서드 → 테스트**: 기록상 그 메서드를 지나간 테스트 클래스 + 호출 그래프(인덱스)에서 그 메서드를 부르는 테스트 클래스.
+3. **늘 돌리는 것**: 이번 PR 이 바꾼 테스트, 기준 기록에 없는 테스트(기록 뒤에 생김), 증거 · 관측 테스트.
+4. **전체를 돌리는 경우** (영향 범위를 확정할 수 없음): 기준 기록 없음 · 오래됨(`EXEC_SELECTION_MAX_AGE`), 빌드 · 설정 · 리소스 변경, 메서드 밖 변경(필드 · 상수 · 클래스 선언), 테스트 보조 코드 변경, 테스트 밖(애플리케이션 시작 · 다른 스레드)에서만 실행되는 메서드 변경, 인터페이스 기본 메서드 변경, Java 가 아닌 테스트 소스. 문서 · 이미지 · `static/` 변경은 무시한다.
+
+걸러지는 것은 "기준 기록에서 바뀐 메서드를 한 번도 지나가지 않았고 호출 그래프로도 닿지 않는 테스트" 뿐이다. 러너는 고른 클래스만 Gradle(`-I` 초기화 스크립트로 모든 모듈의 Test 작업에 필터) · Maven(`-Dtest`)으로 돌리고, base · head 에 같은 목록을 쓴다.
+
+- 단계 `EXEC_SELECT` 와 실행 기록의 `selection` 에 테스트 클래스마다 돌렸는지 · 이유(기록 · 호출 그래프 · 바뀐 테스트 · 기록에 없음 · 영향 없음)와 기준 기록에서 걸린 시간을 남긴다. 화면의 "테스트 선택"이 그대로 그린다.
+- **그림자 모드**(`EXEC_TEST_SELECTION=shadow`): 전체를 돌리되 "골랐다면"을 기록하고, 걸렀을 테스트에서 회귀 · 새 실패가 나오면 `EXEC_DIFF` 의 `selection.missed` 에 남긴다. 선택 규칙이 놓친 것이 없는지 실제 PR 로 확인할 때 쓴다.
+- 일부만 돈 실행의 호출 기록은 기준으로도, 화면의 런타임 오버레이로도 쓰지 않는다 (전체 실행 기록만).
 
 ## 결정적 검사
 
@@ -141,6 +157,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | GET | `/api/reviews/{id}/runtime` | 리뷰의 런타임 호출 기록 `{base, head}` |
 | GET | `/api/projects/{id}/runtime` | 프로젝트의 가장 최근 head 호출 기록 (코드 그래프 · 시티 오버레이). 없으면 204 |
 | GET | `/api/test-runs/{id}/extra-files` | 러너 전용 (`X-Run-Token`). 증거 테스트: 200 파일 · 202 만드는 중 · 204 없음 |
+| GET | `/api/test-runs/{id}/selection` | 러너 전용 (`X-Run-Token`). 돌릴 테스트: 200 한 줄에 하나씩 테스트 클래스 · 202 고르는 중 · 204 전체 |
 | POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
 오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502), `WEBHOOK_DISABLED`(404), `WEBHOOK_SIGNATURE_INVALID`(401), `WEBHOOK_INVALID`(400), `API_TOKEN_INVALID`(401)
@@ -185,6 +202,8 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `EXEC_NAMESPACE` · `EXEC_RUNTIME_CLASS` | `prguard-runs` · (없음) | 쿠버네티스 Job 네임스페이스, 격리 런타임 (예: gvisor) |
 | `EXEC_CPU` · `EXEC_MEMORY` · `EXEC_TIMEOUT` | `2` · `3Gi` · `PT15M` | 러너 하나의 자원과 제한 시간 |
 | `EVIDENCE_ENABLED` | `true` | 실행 검증이 켜져 있을 때 증거 테스트를 만들지 (`OPENAI_API_KEY` 필요) |
+| `EXEC_TEST_SELECTION` | `on` | 영향 테스트 선택. `on`: 영향 있는 테스트만, `shadow`: 전체를 돌리며 놓친 실패 확인, `off`: 늘 전체 |
+| `EXEC_SELECTION_MAX_AGE` | `P14D` | 기준(전체 실행 기록)이 이보다 오래되면 전체를 돌린다 |
 | `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
 | `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
 | `GRAPH_DISPATCH_TOKEN` | (`GITHUB_TOKEN`) | pr-guard-api 레포에 Actions 쓰기 권한이 있는 토큰. 워크플로 실행에 쓴다 |
