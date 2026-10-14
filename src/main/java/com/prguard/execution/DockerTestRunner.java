@@ -11,15 +11,18 @@ import org.slf4j.LoggerFactory;
 /**
  * 로컬 개발용: 이 서버가 있는 곳의 docker 로 러너 컨테이너를 띄운다. 쿠버네티스 없이 같은 흐름을 확인할 때 쓴다.
  * 격리는 쿠버네티스 쪽과 같은 수준으로 맞춘다 (root 아님, capability 없음, CPU · 메모리 제한).
+ * 의존성 캐시를 켜면 프로젝트마다 이름 붙은 볼륨(prguard-cache-…)을 /cache 에 붙인다: base 는 읽기 · 쓰기, head 는 읽기 전용.
  */
 public class DockerTestRunner implements TestRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DockerTestRunner.class);
 
     private final ExecutionProperties props;
+    private final RunnerCacheProperties cache;
 
-    public DockerTestRunner(ExecutionProperties props) {
+    public DockerTestRunner(ExecutionProperties props, RunnerCacheProperties cache) {
         this.props = props;
+        this.cache = cache;
     }
 
     @Override
@@ -30,6 +33,13 @@ public class DockerTestRunner implements TestRunner {
                 "--cpus", cpus(props.cpu()), "--memory", dockerMemory(props.memory()),
                 "--add-host", "host.docker.internal:host-gateway",
                 "--label", "app=" + KubernetesTestRunner.APP_LABEL));
+        if (cache.enabled()) {
+            cmd.add("-v");
+            cmd.add("prguard-cache-" + RunnerCacheProperties.key(job.repoUrl()) + ":/cache"
+                    + (RunnerCacheProperties.writable(job.side()) ? "" : ":ro"));
+            cmd.add("-e");
+            cmd.add("CACHE=1");
+        }
         for (String[] e : new String[][] {
                 {"REPO_URL", job.repoUrl()}, {"SHA", job.sha()}, {"PR_NUMBER", String.valueOf(job.prNumber())},
                 {"SIDE", job.side()}, {"CALLBACK_URL", job.callbackUrl()}, {"RUN_TOKEN", job.token()}}) {

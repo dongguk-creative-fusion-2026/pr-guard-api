@@ -6,3 +6,4 @@ resources:
   - rbac.yaml
   - limits.yaml
   - network-policy.yaml
+  - runner-cache.yaml

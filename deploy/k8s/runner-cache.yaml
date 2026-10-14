@@ -1,0 +1,12 @@
+# 러너 의존성 캐시 (Gradle · Maven). API 에 EXEC_CACHE=true 를 주면 러너가 이 PVC 의 프로젝트 칸을 /cache 에 붙인다.
+# base 러너만 쓰고 head(PR 코드)는 읽기 전용으로 붙는다. 노드가 여러 개면 ReadWriteMany 를 지원하는 스토리지 클래스를 쓴다
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prguard-runner-cache
+  namespace: prguard-runs
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi

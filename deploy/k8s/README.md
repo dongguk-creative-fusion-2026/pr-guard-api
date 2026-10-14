@@ -62,6 +62,16 @@ API 환경변수:
 | `EXEC_NAMESPACE` | `prguard-runs` | |
 | `EXEC_RUNTIME_CLASS` | `gvisor` | 비우면 기본 런타임 |
 | `EXEC_CPU` · `EXEC_MEMORY` · `EXEC_TIMEOUT` | `2` · `3Gi` · `PT15M` | 러너 하나의 한도 |
+| `EXEC_CACHE` · `EXEC_CACHE_PVC` | `true` · `prguard-runner-cache` | 러너 의존성 캐시 (아래) |
+
+### 의존성 캐시
+
+러너는 실행마다 Gradle 배포판과 의존성을 새로 받는다. `EXEC_CACHE=true` 면 `runner-cache.yaml` 의 PVC 를 러너의 `/cache` 에 붙여 남겨 둔다.
+
+- 프로젝트(레포)마다 PVC 안의 다른 칸(`subPath`)을 쓴다. 한 레포가 다른 레포의 캐시를 바꿀 수 없다.
+- **base 러너**(이미 머지된 코드)만 캐시에 쓴다: `GRADLE_USER_HOME=/cache/gradle`, Maven `-Dmaven.repo.local=/cache/m2`.
+- **head 러너**(믿을 수 없는 PR 코드)는 캐시를 읽기 전용으로 붙인다. Gradle 은 읽기 전용 의존성 캐시(`GRADLE_RO_DEP_CACHE`)로 쓰고 없는 것만 새로 받는다. 래퍼 배포판 · Maven 저장소는 러너 안으로 복사해 쓴다. PR 코드가 캐시를 오염시켜 다음 실행에 끼어들 수 없다.
+- PVC 는 기본 `ReadWriteOnce` 다. 노드가 여러 개면 러너가 다른 노드에 뜰 수 있으니 `ReadWriteMany` 를 지원하는 스토리지 클래스로 바꾼다.
 
 GHCR 패키지가 비공개면 `prguard-runs` 에 imagePullSecret 을 두거나 패키지를 공개로 바꾼다.
 
@@ -81,7 +91,7 @@ kubectl --context minikube apply -k deploy/k8s
 
 ## 남은 일
 
-- 의존성 · Gradle 배포판 캐시 (지금은 실행마다 받아서 sandbox 기준 3~6분). 영향 테스트 선택은 테스트 실행 시간을 줄이지만 빌드 · 의존성 시간은 그대로다
+- 캐시 크기 관리 (Gradle 은 오래 안 쓴 항목을 스스로 지우지만 Maven 저장소는 계속 커진다)
 - 의존성 프록시를 두고 NetworkPolicy egress 를 프록시 · GitHub · API 로만 좁히기
 - 큐 길이 기반 자동 확장 (KEDA), 스팟 노드
 - 리뷰 워커가 실행을 기다리는 동안 다른 리뷰가 밀린다 → 실행 대기를 비동기로

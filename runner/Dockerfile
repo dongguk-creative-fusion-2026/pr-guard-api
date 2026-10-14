@@ -25,6 +25,8 @@ RUN mkdir -p /opt/prguard/pit && cd /opt/prguard/pit \
                 org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar; do \
          curl -fsSLO "https://repo1.maven.org/maven2/$j"; \
        done
+# 의존성 캐시를 붙일 자리. docker 이름 붙은 볼륨은 처음 붙을 때 이 소유자를 물려받는다
+RUN mkdir -p /cache && chown 1000:1000 /cache
 COPY --chmod=755 run-tests.sh /usr/local/bin/run-tests
 USER 1000:1000
 WORKDIR /home/runner

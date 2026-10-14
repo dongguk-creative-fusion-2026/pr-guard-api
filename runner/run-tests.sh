@@ -20,14 +20,47 @@ WORK="$HOME/work"
 LOG="$WORK/build.log"
 mkdir -p "$WORK"
 
+# 의존성 캐시 (/cache, PR Guard 가 프로젝트 칸을 붙인다). base 는 읽기 · 쓰기, head(PR 코드)는 읽기만:
+# PR 코드가 캐시에 손대 다음 실행을 오염시키지 못하게 한다
+CACHE_MODE=none
+if [ "${CACHE:-}" = 1 ] && [ -d /cache ]; then
+  if [ "${SIDE:-}" = BASE ] && [ -w /cache ]; then
+    CACHE_MODE=rw
+    export GRADLE_USER_HOME=/cache/gradle
+    export MAVEN_OPTS="${MAVEN_OPTS:-} -Dmaven.repo.local=/cache/m2"
+    mkdir -p /cache/gradle /cache/m2
+  else
+    CACHE_MODE=ro
+    # Gradle: 읽기 전용 의존성 캐시 (modules-2 가 있는 caches 디렉터리). 없는 것만 새로 받는다
+    [ -d /cache/gradle/caches/modules-2 ] && export GRADLE_RO_DEP_CACHE=/cache/gradle/caches
+    # 래퍼 배포판 · Maven 저장소는 읽기 전용으로 쓸 수 없어 복사한다
+    if [ -d /cache/gradle/wrapper/dists ]; then
+      mkdir -p "$HOME/.gradle/wrapper" && cp -a /cache/gradle/wrapper/dists "$HOME/.gradle/wrapper/"
+    fi
+    if [ -d /cache/m2 ]; then
+      mkdir -p "$HOME/.m2" && cp -a /cache/m2 "$HOME/.m2/repository"
+    fi
+  fi
+fi
+echo "의존성 캐시: $CACHE_MODE" >>"$LOG"
+cache_note() {
+  case "$CACHE_MODE" in
+    rw) echo " (의존성 캐시 읽기 · 쓰기)" ;;
+    ro) echo " (의존성 캐시 읽기 전용)" ;;
+  esac
+}
+
 # Gradle 툴체인이 이미지 안의 JDK(21 기본 · 17)를 찾게 한다. 레포가 languageVersion 17 을 요구해도 내려받지 않고 쓴다
 JDKS=""
 for jdk in /opt/java/17 /opt/java/openjdk; do
   [ -x "$jdk/bin/java" ] && JDKS="${JDKS:+$JDKS,}$jdk"
 done
 if [ -n "$JDKS" ]; then
-  mkdir -p "$HOME/.gradle"
-  echo "org.gradle.java.installations.paths=$JDKS" >> "$HOME/.gradle/gradle.properties"
+  GH="${GRADLE_USER_HOME:-$HOME/.gradle}"
+  mkdir -p "$GH"
+  # 캐시에 남는 파일이라 같은 줄을 거듭 붙이지 않는다
+  grep -qxF "org.gradle.java.installations.paths=$JDKS" "$GH/gradle.properties" 2>/dev/null \
+    || echo "org.gradle.java.installations.paths=$JDKS" >> "$GH/gradle.properties"
 fi
 
 progress() {
@@ -197,14 +230,14 @@ has_reports() {
 
 run_build() {
   if [ -f ./gradlew ]; then
-    progress building "Gradle 빌드 · 테스트"
+    progress building "Gradle 빌드 · 테스트$(cache_note)"
     chmod +x ./gradlew
     # --continue: 실패한 테스트가 있어도 나머지 모듈 테스트를 계속 돌린다
     local select=()
     [ "$SELECTION" = filter ] && select=(-I "$WORK/select.gradle")
     ./gradlew test --no-daemon --continue --console=plain "${select[@]}" >>"$LOG" 2>&1
   else
-    progress building "Maven 빌드 · 테스트"
+    progress building "Maven 빌드 · 테스트$(cache_note)"
     chmod +x ./mvnw
     local select=()
     if [ "$SELECTION" = filter ]; then

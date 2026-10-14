@@ -219,6 +219,7 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `EXEC_IMAGE` | `ghcr.io/dongguk-creative-fusion-2026/pr-guard-test-runner:latest` | 러너 이미지 (`runner/`) |
 | `EXEC_NAMESPACE` · `EXEC_RUNTIME_CLASS` | `prguard-runs` · (없음) | 쿠버네티스 Job 네임스페이스, 격리 런타임 (예: gvisor) |
 | `EXEC_CPU` · `EXEC_MEMORY` · `EXEC_TIMEOUT` | `2` · `3Gi` · `PT15M` | 러너 하나의 자원과 제한 시간 |
+| `EXEC_CACHE` · `EXEC_CACHE_PVC` | `false` · `prguard-runner-cache` | 러너 의존성 캐시(Gradle · Maven). 프로젝트마다 다른 칸, base 는 읽기 · 쓰기, head(PR 코드)는 읽기 전용. 쿠버네티스는 PVC(`deploy/k8s/runner-cache.yaml`), docker 러너는 이름 붙은 볼륨 |
 | `EVIDENCE_ENABLED` | `true` | 실행 검증이 켜져 있을 때 증거 테스트를 만들지 (`OPENAI_API_KEY` 필요) |
 | `EXEC_TEST_SELECTION` | `on` | 영향 테스트 선택. `on`: 영향 있는 테스트만, `shadow`: 전체를 돌리며 놓친 실패 확인, `off`: 늘 전체 |
 | `EXEC_MUTATION` · `EXEC_MUTATION_TIMEOUT` | `true` · `PT6M` | 변경분 변이 테스트를 할지, 러너에서 PIT 에 주는 시간 |
