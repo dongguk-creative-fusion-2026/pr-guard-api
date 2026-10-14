@@ -33,6 +33,8 @@ public class EvidenceService {
     private static final Logger log = LoggerFactory.getLogger(EvidenceService.class);
     private static final int MAX_TYPE_CHARS = 8000;
     private static final int MAX_TEST_CHARS = 6000;
+    private static final java.util.regex.Pattern BOOT_TEST_STARTER =
+            java.util.regex.Pattern.compile("spring-boot-starter(-[a-z0-9]+)*-test\\b");
 
     private final EvidenceGenerator generator;
     private final EvidenceProperties props;
@@ -169,7 +171,8 @@ public class EvidenceService {
         }
         String text = build.toString().toLowerCase(Locale.ROOT);
         List<String> libs = new ArrayList<>(List.of("junit-jupiter"));
-        boolean boot = text.contains("spring-boot-starter-test");
+        // Spring Boot 4 는 모듈별 테스트 스타터(spring-boot-starter-webmvc-test …)로 나뉘었다
+        boolean boot = BOOT_TEST_STARTER.matcher(text).find();
         if (boot) {
             libs.add("spring-boot-test");
         }
