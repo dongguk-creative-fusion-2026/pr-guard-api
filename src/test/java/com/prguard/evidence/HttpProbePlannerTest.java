@@ -118,6 +118,17 @@ class HttpProbePlannerTest {
     }
 
     @Test
+    void bootTestStarter_detectedIncludingBoot4ModularStarters() throws IOException {
+        Files.writeString(out.resolve("build.gradle"), "testImplementation 'org.springframework.boot:spring-boot-starter-test'");
+        assertThat(EvidenceService.testLibraries(out)).contains("spring-boot-test", "mockito", "assertj");
+        Files.writeString(out.resolve("build.gradle"),
+                "testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'");
+        assertThat(EvidenceService.testLibraries(out)).contains("spring-boot-test");
+        Files.writeString(out.resolve("build.gradle"), "implementation 'org.springframework.boot:spring-boot-starter-web'");
+        assertThat(EvidenceService.testLibraries(out)).doesNotContain("spring-boot-test");
+    }
+
+    @Test
     void mappingPaths_valuePathArraysAndClassPrefix() {
         assertThat(HttpProbePlanner.paths("@GetMapping(\"/a\")")).containsExactly("/a");
         assertThat(HttpProbePlanner.paths("@GetMapping(value = {\"/a\", \"/b\"}, produces = \"text/html\")")).containsExactly("/a", "/b");

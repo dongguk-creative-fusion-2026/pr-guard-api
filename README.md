@@ -81,7 +81,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 
 1. **대상**: 이번 PR 이 본문을 바꾸거나 새로 만든 `@Controller` · `@RestController` 메서드 중 GET 매핑(`@GetMapping`, 메서드 없는 · GET `@RequestMapping`)인 것 (최대 3개). 클래스의 `@RequestMapping` 경로를 앞에 붙인다. 상태를 바꿀 수 있는 POST · PUT · DELETE 는 보내지 않는다.
 2. **요청**: head 의 기존 테스트에서 MockMvc `get("/경로?쿼리", 경로 변수…)` · `.param("이름", "값")` 의 문자열 상수를 모아 매핑 경로와 맞는 것을 쓴다 (핸들러마다 최대 6개). 없으면 경로 변수를 `1` 로 채운 기본 요청 하나.
-3. **관측 테스트**: `@SpringBootApplication` 패키지에 `PrGuardProbeHttp{N}Test` 를 만들어 `@SpringBootTest` + MockMvc 로 같은 요청을 base · head 에서 보낸다. LLM 없이 만들고, Spring Boot 테스트(`spring-boot-starter-test`)가 있는 레포에서만 만든다.
+3. **관측 테스트**: `@SpringBootApplication` 패키지에 `PrGuardProbeHttp{N}Test` 를 만들어 `@SpringBootTest` + MockMvc 로 같은 요청을 base · head 에서 보낸다. LLM 없이 만들고, Spring Boot 테스트 스타터(`spring-boot-starter-test`, Boot 4 의 `spring-boot-starter-webmvc-test` 등)가 있는 레포에서만 만든다.
 4. **응답 요약**: 상태 코드, 리다이렉트 위치, 화면 이름, 모델 값(컬렉션 · 페이지는 개수, 최대 5개), 처리 중 예외, JSON 본문(120자까지).
 
 요약이 다른 요청은 다른 관측 테스트와 같이 `EXEC_BEHAVIOR_DIFF`(MAJOR)로 핸들러 메서드에 붙고, PR 화면의 "동작 diff" 카드에 요청마다 base · head 응답이 나온다.
