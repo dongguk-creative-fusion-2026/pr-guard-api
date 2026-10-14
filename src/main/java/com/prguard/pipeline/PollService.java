@@ -45,10 +45,7 @@ public class PollService {
 
             int queued = 0;
             for (GitHubPull pr : open.pulls()) {
-                pulls.upsertOpen(project.id(), pr);
-                String sha = pr.head().sha();
-                if (reviews.createPending(project.id(), pr.number(), sha)) {
-                    reviews.supersedeOlder(project.id(), pr.number(), sha);
+                if (track(project.id(), pr)) {
                     queued++;
                 }
             }
@@ -64,5 +61,16 @@ public class PollService {
             projects.markPollFailed(project.id(), e.getMessage());
             return PollResult.failed(project.id(), e.getMessage());
         }
+    }
+
+    /** 열린 PR 을 저장하고, head SHA 가 처음 보이면 리뷰 작업을 만든다 (예전 커밋의 대기 작업은 버림). 만들었으면 true. */
+    boolean track(long projectId, GitHubPull pr) {
+        pulls.upsertOpen(projectId, pr);
+        String sha = pr.head().sha();
+        if (!reviews.createPending(projectId, pr.number(), sha)) {
+            return false;
+        }
+        reviews.supersedeOlder(projectId, pr.number(), sha);
+        return true;
     }
 }
