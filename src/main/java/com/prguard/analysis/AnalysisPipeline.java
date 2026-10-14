@@ -16,6 +16,8 @@ import com.prguard.review.ReviewInput;
 import com.prguard.events.EventSink;
 import com.prguard.evidence.EvidencePlan;
 import com.prguard.evidence.EvidenceService;
+import com.prguard.execution.TestSelection;
+import com.prguard.execution.TestSelectionService;
 import com.prguard.events.Stage;
 import com.prguard.execution.TestRunService;
 import com.prguard.review.Reviewer;
@@ -71,11 +73,13 @@ public class AnalysisPipeline {
     private final TestRunService testRuns;
     private final EvidenceService evidence;
     private final FindingGrounder grounder;
+    private final TestSelectionService selector;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
-                            TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder) {
+                            TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder,
+                            TestSelectionService selector) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -87,6 +91,7 @@ public class AnalysisPipeline {
         this.testRuns = testRuns;
         this.evidence = evidence;
         this.grounder = grounder;
+        this.selector = selector;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
@@ -120,6 +125,8 @@ public class AnalysisPipeline {
         CompletableFuture<List<Finding>> execution = CompletableFuture.completedFuture(List.of());
         // 증거 테스트와 바뀐 메서드. 러너는 먼저 뜨고, 인덱스가 끝나면 채운다
         CompletableFuture<EvidencePlan> plan = new CompletableFuture<>();
+        // 돌릴 테스트. 러너는 먼저 뜨고, 인덱스가 끝나면 고른다
+        CompletableFuture<TestSelection> selection = new CompletableFuture<>();
         CompletableFuture<Void> planning = CompletableFuture.completedFuture(null);
         try {
             checkout = prepare(ctx, repoKb, sink);
@@ -132,12 +139,13 @@ public class AnalysisPipeline {
                 testRuns.skipAll(sink, "소스가 없어 건너뜀");
             } else {
                 Checkout source = checkout;
-                execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink, plan),
+                execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink, plan, selection),
                         executor);
             }
             if (checkout != null) {
                 index(ctx, checkout, sink);
                 if (exec) {
+                    selection.complete(selector.select(reviewId, ctx, sink));
                     // LLM 으로 테스트를 쓰는 동안 이력 · 검사는 계속 진행한다
                     planning = CompletableFuture.runAsync(() -> plan.complete(evidence.plan(ctx, sink)), executor)
                             .exceptionally(e -> {
@@ -190,6 +198,7 @@ public class AnalysisPipeline {
                     summarize(ctx, System.currentTimeMillis() - started));
         } finally {
             plan.complete(EvidencePlan.EMPTY);
+            selection.complete(TestSelection.off("선택 없음"));
             if (checkout != null) {
                 workspace.release(checkout);
             }

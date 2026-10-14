@@ -13,6 +13,8 @@ import java.time.OffsetDateTime;
  * @param results    테스트 케이스별 결과 [{name, status, message}]
  * @param extraState 증거 테스트 PENDING | READY | NONE
  * @param evidenceDropped 증거 테스트가 컴파일되지 않아 빼고 돌렸으면 그 이유
+ * @param selectionState 실행 범위 PENDING(고르는 중) | ALL(전체) | FILTER(영향 있는 테스트만)
+ * @param selection 어떤 테스트를 왜 골랐고 걸렀는지 ({@link TestSelection})
  */
 public record TestRun(
         long id,
@@ -35,7 +37,9 @@ public record TestRun(
         OffsetDateTime createdAt,
         OffsetDateTime finishedAt,
         String extraState,
-        String evidenceDropped) {
+        String evidenceDropped,
+        String selectionState,
+        @JsonRawValue String selection) {
 
     public boolean finished() {
         return "DONE".equals(status) || "FAILED".equals(status);

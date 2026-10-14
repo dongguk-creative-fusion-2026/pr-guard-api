@@ -11,6 +11,7 @@ package com.prguard.events;
  *   EXEC_PREPARE → EXEC_POD_BASE → EXEC_TEST_BASE ┐
  *               → EXEC_POD_HEAD → EXEC_TEST_HEAD ┴→ EXEC_DIFF → GROUND
  *   METHOD_DIFF → EXEC_EVIDENCE → EXEC_TEST_BASE · EXEC_TEST_HEAD (증거 테스트를 함께 돌린다)
+ *   METHOD_DIFF → EXEC_SELECT → EXEC_TEST_BASE · EXEC_TEST_HEAD (영향 있는 테스트만 돌린다)
  * </pre>
  */
 public enum Stage {
@@ -36,6 +37,8 @@ public enum Stage {
     EXEC_POD_HEAD,
     /** 바뀐 동작을 base 통과 · head 실패로 증명할 테스트 만들기 */
     EXEC_EVIDENCE,
+    /** 바뀐 메서드와 기준 실행 기록으로 돌릴 테스트 고르기 (영향 테스트 선택) */
+    EXEC_SELECT,
     /** base · head 에서 clone → 빌드 → 테스트 */
     EXEC_TEST_BASE,
     EXEC_TEST_HEAD,

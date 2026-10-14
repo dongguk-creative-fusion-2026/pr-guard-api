@@ -10,6 +10,7 @@
 #
 # 진행은 {CALLBACK_URL}/progress 로, 결과(JUnit XML · 빌드 로그 끝부분 · 호출 기록 · 관측 기록)는 {CALLBACK_URL}/report 로 보낸다.
 # clone 뒤 {CALLBACK_URL}/extra-files 에서 PR Guard 가 만든 증거 · 관측 테스트를 받아 레포 테스트와 함께 돌린다.
+# 이어서 {CALLBACK_URL}/selection 에서 돌릴 테스트 클래스(영향 테스트 선택)를 받는다. 없으면 전체를 돌린다.
 # 지원: Gradle wrapper(gradlew), Maven wrapper(mvnw)
 set -uo pipefail
 : "${REPO_URL:?}" "${SHA:?}" "${CALLBACK_URL:?}" "${RUN_TOKEN:?}"
@@ -85,6 +86,62 @@ for attempt in $(seq 1 60); do
   fi
 done
 
+# 돌릴 테스트 (영향 테스트 선택). 202 = 고르는 중, 204 = 전체, 200 = 한 줄에 하나씩 테스트 클래스 (비어 있으면 레포 테스트 없음)
+SELECTION=all
+SELECTED=()
+progress selecting "돌릴 테스트 받는 중"
+for attempt in $(seq 1 60); do
+  status=$(curl --silent --max-time 10 -o "$WORK/selection.txt" -w '%{http_code}' -H "X-Run-Token: $RUN_TOKEN" \
+    "$CALLBACK_URL/selection" || echo 000)
+  if [ "$status" = 200 ]; then
+    SELECTION=filter
+    while IFS= read -r cls || [ -n "$cls" ]; do
+      # 빌드 도구 인자로 쓰므로 클래스 이름 모양만 받는다
+      case "$cls" in ''|*[!A-Za-z0-9_.]*) continue ;; esac
+      SELECTED+=("$cls")
+    done < "$WORK/selection.txt"
+    break
+  elif [ "$status" = 202 ]; then
+    sleep 3
+  else
+    break
+  fi
+done
+if [ "$SELECTION" = filter ]; then
+  # 증거 · 관측 테스트는 고른 것과 상관없이 늘 돈다
+  for path in "${EXTRA[@]}"; do
+    case "$path" in
+      *src/test/java/*.java)
+        cls="${path#*src/test/java/}"
+        cls="${cls%.java}"
+        SELECTED+=("${cls//\//.}")
+        ;;
+    esac
+  done
+  printf '%s\n' "${SELECTED[@]}" > "$WORK/selected-tests.txt"
+  export PRGUARD_SELECTED_TESTS="$WORK/selected-tests.txt"
+  # Gradle: 모든 모듈의 Test 작업에 필터. 고른 클래스가 없는 모듈은 실패하지 않고 넘어간다
+  cat > "$WORK/select.gradle" <<'GRADLE'
+allprojects {
+    tasks.withType(Test).configureEach {
+        def names = new File(System.getenv('PRGUARD_SELECTED_TESTS')).readLines().collect { it.trim() }.findAll { it }
+        filter {
+            failOnNoMatchingTests = false
+            if (names.isEmpty()) {
+                includeTestsMatching 'prguard.selection.NoTests'
+            } else {
+                names.each { includeTestsMatching it; includeTestsMatching(it + '$*') }
+            }
+        }
+    }
+}
+GRADLE
+  echo "영향 테스트 선택: 테스트 클래스 ${#SELECTED[@]}개만 실행" >>"$LOG"
+  printf '  %s\n' "${SELECTED[@]}" >>"$LOG"
+else
+  echo "영향 테스트 선택 없음: 전체 테스트 실행" >>"$LOG"
+fi
+
 # 호출 기록: JAVA_TOOL_OPTIONS 는 빌드 도구가 띄우는 테스트 JVM 까지 물려받는다
 if [ "${TRACE_PACKAGES:-}" = off ]; then
   TRACE_PACKAGES=
@@ -116,11 +173,23 @@ run_build() {
     progress building "Gradle 빌드 · 테스트"
     chmod +x ./gradlew
     # --continue: 실패한 테스트가 있어도 나머지 모듈 테스트를 계속 돌린다
-    ./gradlew test --no-daemon --continue --console=plain >>"$LOG" 2>&1
+    local select=()
+    [ "$SELECTION" = filter ] && select=(-I "$WORK/select.gradle")
+    ./gradlew test --no-daemon --continue --console=plain "${select[@]}" >>"$LOG" 2>&1
   else
     progress building "Maven 빌드 · 테스트"
     chmod +x ./mvnw
-    ./mvnw -B -ntp test -fae -Dmaven.test.failure.ignore=false >>"$LOG" 2>&1
+    local select=()
+    if [ "$SELECTION" = filter ]; then
+      local pattern=prguard.selection.NoTests
+      if [ "${#SELECTED[@]}" -gt 0 ]; then
+        # 클래스 뒤 * 는 중첩 클래스(@Nested)까지 포함한다
+        pattern=$(printf '%s*,' "${SELECTED[@]}")
+        pattern="${pattern%,}"
+      fi
+      select=("-Dtest=$pattern" -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false)
+    fi
+    ./mvnw -B -ntp test -fae -Dmaven.test.failure.ignore=false "${select[@]}" >>"$LOG" 2>&1
   fi
 }
 

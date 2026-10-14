@@ -64,6 +64,14 @@ prguard:
     memory: ${EXEC_MEMORY:3Gi}
     timeout: ${EXEC_TIMEOUT:PT15M}
     poll-interval: PT2S
+    selection:
+      # 영향 테스트 선택. on: 바뀐 코드를 지나가는 테스트만 base · head 에서 돌림,
+      # shadow: 전체를 돌리되 "골랐다면"을 기록해 놓친 실패가 없는지 확인, off: 늘 전체
+      mode: ${EXEC_TEST_SELECTION:on}
+      # 기준(전체 실행 기록)이 이보다 오래되면 전체를 돌린다
+      max-reference-age: ${EXEC_SELECTION_MAX_AGE:P14D}
+      # 호출 그래프에서 바뀐 메서드를 부르는 테스트를 찾을 때 거슬러 올라가는 단계
+      static-depth: 4
   evidence:
     # 증거 테스트: 바뀐 메서드마다 base 통과 · head 실패하는 테스트를 LLM 으로 써서 함께 돌린다 (OPENAI_API_KEY 필요)
     enabled: ${EVIDENCE_ENABLED:true}

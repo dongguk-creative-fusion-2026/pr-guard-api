@@ -25,8 +25,15 @@ public final class JUnitReportParser {
         PASSED, FAILED, ERROR, SKIPPED
     }
 
-    /** @param name 클래스 이름 + "#" + 메서드 이름 */
-    public record TestCase(String name, Status status, String message) {
+    /**
+     * @param name 클래스 이름 + "#" + 메서드 이름
+     * @param time 걸린 시간 (초). 보고서에 없으면 0
+     */
+    public record TestCase(String name, Status status, String message, double time) {
+
+        public TestCase(String name, Status status, String message) {
+            this(name, status, message, 0);
+        }
 
         public boolean failed() {
             return status == Status.FAILED || status == Status.ERROR;
@@ -52,19 +59,29 @@ public final class JUnitReportParser {
                 Element failure = first(c, "failure");
                 Element error = first(c, "error");
                 Element skipped = first(c, "skipped");
+                double time = seconds(c.getAttribute("time"));
                 if (failure != null) {
-                    out.add(new TestCase(name, Status.FAILED, message(failure)));
+                    out.add(new TestCase(name, Status.FAILED, message(failure), time));
                 } else if (error != null) {
-                    out.add(new TestCase(name, Status.ERROR, message(error)));
+                    out.add(new TestCase(name, Status.ERROR, message(error), time));
                 } else if (skipped != null) {
-                    out.add(new TestCase(name, Status.SKIPPED, null));
+                    out.add(new TestCase(name, Status.SKIPPED, null, time));
                 } else {
-                    out.add(new TestCase(name, Status.PASSED, null));
+                    out.add(new TestCase(name, Status.PASSED, null, time));
                 }
             }
             return out;
         } catch (Exception e) {
             throw new ExecutionException("JUnit 보고서를 읽지 못함: " + e.getMessage());
+        }
+    }
+
+    private static double seconds(String value) {
+        try {
+            double t = Double.parseDouble(value.replace(",", ""));
+            return Double.isFinite(t) && t >= 0 ? t : 0;
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 

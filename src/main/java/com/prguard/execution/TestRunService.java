@@ -42,6 +42,7 @@ import org.springframework.stereotype.Service;
  * 화면의 실행 검증 레인 단계마다 진행을 알린다:
  * 실행 준비(EXEC_PREPARE) → Pod 기동(EXEC_POD_*) → 빌드 · 테스트(EXEC_TEST_*) → 차등 비교(EXEC_DIFF).
  * 증거 테스트(EXEC_EVIDENCE)는 분석 쪽에서 만들어 넘기고, 러너는 clone 뒤 그것을 받아 레포 테스트와 함께 돌린다.
+ * 돌릴 테스트(EXEC_SELECT)도 분석 쪽에서 골라 넘긴다. 러너는 영향 있는 테스트 클래스만 base · head 에서 똑같이 돌린다.
  * 러너는 진행과 결과를 {@link TestRunController} 로 보내고, 여기서는 그 기록과 러너(Pod) 상태를 주기적으로 읽는다.
  */
 @Service
@@ -49,7 +50,7 @@ public class TestRunService {
 
     private static final Logger log = LoggerFactory.getLogger(TestRunService.class);
     static final List<Stage> STAGES = List.of(Stage.EXEC_PREPARE, Stage.EXEC_POD_BASE, Stage.EXEC_POD_HEAD,
-            Stage.EXEC_TEST_BASE, Stage.EXEC_TEST_HEAD, Stage.EXEC_DIFF, Stage.EXEC_EVIDENCE);
+            Stage.EXEC_TEST_BASE, Stage.EXEC_TEST_HEAD, Stage.EXEC_DIFF, Stage.EXEC_EVIDENCE, Stage.EXEC_SELECT);
     /** 러너(Pod)가 끝났는데 결과가 안 오면 이만큼 기다린 뒤 실패로 본다 */
     private static final long REPORT_GRACE_MS = 30_000;
     private static final int MAX_LISTED = 20;
@@ -97,12 +98,16 @@ public class TestRunService {
 
     /** base · head 에서 테스트를 돌리고 비교해 지적을 돌려준다. 끝날 때까지 기다린다. */
     public List<Finding> verify(Long reviewId, PullInfo pull, Checkout checkout, EventSink sink) {
-        return verify(reviewId, pull, checkout, sink, CompletableFuture.completedFuture(EvidencePlan.EMPTY));
+        return verify(reviewId, pull, checkout, sink, CompletableFuture.completedFuture(EvidencePlan.EMPTY),
+                CompletableFuture.completedFuture(TestSelection.off("선택 없음")));
     }
 
-    /** @param plan 증거 테스트와 바뀐 메서드. 러너가 뜬 뒤에 채워진다 */
+    /**
+     * @param plan      증거 테스트와 바뀐 메서드. 러너가 뜬 뒤에 채워진다
+     * @param selection 돌릴 테스트. 러너가 뜬 뒤 인덱스가 끝나면 채워진다
+     */
     public List<Finding> verify(Long reviewId, PullInfo pull, Checkout checkout, EventSink sink,
-                                CompletableFuture<EvidencePlan> plan) {
+                                CompletableFuture<EvidencePlan> plan, CompletableFuture<TestSelection> selection) {
         if (!enabled()) {
             skipAll(sink, "실행 환경 준비 중");
             return List.of();
@@ -132,6 +137,15 @@ public class TestRunService {
                     runs.setExtra(s.runId, tests.isEmpty() ? "NONE" : "READY", tests.isEmpty() ? null : json(tests));
                 }
             });
+            // 러너는 증거 테스트를 받은 뒤 돌릴 테스트 목록을 받아 간다 (selection 202 동안 기다림)
+            selection.whenComplete((s, err) -> {
+                TestSelection chosen = s == null ? TestSelection.off("선택 실패") : s;
+                List<String> filter = chosen.filter();
+                for (Side side : sides) {
+                    runs.setSelection(side.runId, filter == null ? "ALL" : "FILTER", filter == null ? null : json(filter),
+                            json(chosen));
+                }
+            });
             sink.done(Stage.EXEC_PREPARE, props.runner() == ExecutionProperties.Runner.KUBERNETES
                     ? "Job 2개 (" + props.namespace() + ")" : "컨테이너 2개", data(
                     "runner", props.runner().name(),
@@ -140,7 +154,7 @@ public class TestRunService {
                     "head", head.runnerName,
                     "ms", System.currentTimeMillis() - prepareStarted));
             watch(sides, sink);
-            return compare(base, head, sink, planOf(plan));
+            return compare(base, head, sink, planOf(plan), selectionOf(selection));
         } catch (RuntimeException e) {
             String reason = describe(e);
             log.warn("실행 검증 실패: {}", reason, e);
@@ -259,7 +273,7 @@ public class TestRunService {
      * 증거 테스트는 따로 판정한다: base 통과 · head 실패면 PR 이 그 동작을 바꿨다는 증거라 MAJOR.
      * head 호출 기록이 있으면 바뀐 메서드마다 지나간 테스트를 찾고, 하나도 없으면 MINOR.
      */
-    private List<Finding> compare(Side base, Side head, EventSink sink, EvidencePlan plan) {
+    private List<Finding> compare(Side base, Side head, EventSink sink, EvidencePlan plan, TestSelection selection) {
         if (base.result == null || !"DONE".equals(base.result.status())) {
             sink.skipped(Stage.EXEC_DIFF, "base 실행이 끝나지 않아 비교하지 않음");
             return List.of();
@@ -341,6 +355,8 @@ public class TestRunService {
                     String.join("\n", untested.stream().limit(MAX_LISTED).toList()), "untested", Finding.TOOL));
         }
 
+        Map<String, Object> selected = selectionResult(selection, diff);
+
         long proven = evidence.stream().filter(v -> v.kind() == EvidenceVerdict.Kind.PROVEN).count();
         String summary = diff.regressions().isEmpty() && diff.newFailures().isEmpty()
                 ? "회귀 없음" : "회귀 " + diff.regressions().size() + " · 새 실패 " + diff.newFailures().size();
@@ -359,8 +375,49 @@ public class TestRunService {
                 "evidence", evidence.stream().map(EvidenceVerdict::view).toList(),
                 "coverage", coverage,
                 "behavior", behavior,
-                "traced", !headTrace.isEmpty()));
+                "traced", !headTrace.isEmpty(),
+                "selection", selected));
         return findings;
+    }
+
+    /**
+     * 선택 실행 결과 요약. 그림자 모드(전체 실행)면 걸렀을 테스트에서 회귀 · 새 실패가 나왔는지 본다 = 선택이 놓친 것
+     */
+    static Map<String, Object> selectionResult(TestSelection selection, TestDiff diff) {
+        Set<String> skipped = new HashSet<>();
+        selection.tests().stream().filter(t -> !t.impacted()).forEach(t -> skipped.add(t.className()));
+        List<String> missed = new ArrayList<>();
+        if (!TestSelection.OFF.equals(selection.mode())) {
+            for (TestCase t : diff.regressions()) {
+                if (skipped.contains(TestSelector.topLevelOfTrace(t.name()))) {
+                    missed.add(t.name());
+                }
+            }
+            for (TestCase t : diff.newFailures()) {
+                if (skipped.contains(TestSelector.topLevelOfTrace(t.name()))) {
+                    missed.add(t.name());
+                }
+            }
+        }
+        if (!missed.isEmpty()) {
+            log.warn("영향 테스트 선택이 놓친 실패 {}건: {}", missed.size(), missed);
+        }
+        return data("mode", selection.mode(), "shadow", selection.shadow(), "total", selection.total(),
+                "impacted", selection.impacted(), "run", selection.run(), "skippedSeconds", selection.skippedSeconds(),
+                "missed", missed.stream().limit(MAX_LISTED).toList());
+    }
+
+    /** 인덱스가 끝나기 전에 러너가 끝나는 일은 거의 없다. 그래도 늦으면 선택 없이 비교한다 */
+    private static TestSelection selectionOf(CompletableFuture<TestSelection> selection) {
+        try {
+            TestSelection s = selection.get(30, TimeUnit.SECONDS);
+            return s == null ? TestSelection.off("선택 없음") : s;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return TestSelection.off("선택 없음");
+        } catch (java.util.concurrent.ExecutionException | TimeoutException e) {
+            return TestSelection.off("선택 없음");
+        }
     }
 
     private static List<TestCase> repoTests(List<TestCase> cases) {
