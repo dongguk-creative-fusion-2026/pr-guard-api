@@ -13,6 +13,16 @@ RUN apt-get update \
     && (userdel -r ubuntu 2>/dev/null || true) \
     && useradd --uid 1000 --create-home runner
 COPY --from=agent /agent/build/libs/trace-agent.jar /opt/prguard/trace-agent.jar
+# 변경분 변이 테스트: PIT 명령줄 실행기 (빌드 도구 플러그인 없이 레포의 테스트 클래스패스로 돌린다)
+RUN mkdir -p /opt/prguard/pit && cd /opt/prguard/pit \
+    && for j in org/pitest/pitest/1.17.0/pitest-1.17.0.jar \
+                org/pitest/pitest-entry/1.17.0/pitest-entry-1.17.0.jar \
+                org/pitest/pitest-command-line/1.17.0/pitest-command-line-1.17.0.jar \
+                org/pitest/pitest-junit5-plugin/1.2.1/pitest-junit5-plugin-1.2.1.jar \
+                org/apache/commons/commons-text/1.12.0/commons-text-1.12.0.jar \
+                org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar; do \
+         curl -fsSLO "https://repo1.maven.org/maven2/$j"; \
+       done
 COPY --chmod=755 run-tests.sh /usr/local/bin/run-tests
 USER 1000:1000
 WORKDIR /home/runner

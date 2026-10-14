@@ -11,6 +11,7 @@
 # 진행은 {CALLBACK_URL}/progress 로, 결과(JUnit XML · 빌드 로그 끝부분 · 호출 기록 · 관측 기록)는 {CALLBACK_URL}/report 로 보낸다.
 # clone 뒤 {CALLBACK_URL}/extra-files 에서 PR Guard 가 만든 증거 · 관측 테스트를 받아 레포 테스트와 함께 돌린다.
 # 이어서 {CALLBACK_URL}/selection 에서 돌릴 테스트 클래스(영향 테스트 선택)를 받는다. 없으면 전체를 돌린다.
+# head 는 테스트 뒤 {CALLBACK_URL}/mutation 의 계획대로 PIT 변이 테스트를 돌리고 mutations.xml 을 함께 보낸다.
 # 지원: Gradle wrapper(gradlew), Maven wrapper(mvnw)
 set -uo pipefail
 : "${REPO_URL:?}" "${SHA:?}" "${CALLBACK_URL:?}" "${RUN_TOKEN:?}"
@@ -40,6 +41,9 @@ report() {
     [ -s "$f" ] && args+=(-F "trace=@$f;type=application/json")
   done
   [ -s "$WORK/probe/probe.jsonl" ] && args+=(-F "probe=@$WORK/probe/probe.jsonl;type=application/json")
+  for f in "$WORK"/pit/*/mutations.xml; do
+    [ -s "$f" ] && args+=(-F "mutations=@$f;type=application/xml")
+  done
   for attempt in 1 2 3; do
     curl --silent --show-error --fail --max-time 60 -X POST -H "X-Run-Token: $RUN_TOKEN" "${args[@]}" \
       "$CALLBACK_URL/report" && return 0
@@ -193,6 +197,90 @@ run_build() {
   fi
 }
 
+# 변경분 변이 테스트 (head 만). PR Guard 가 고른 클래스에 PIT 로 작은 버그를 심어 고른 테스트가 잡는지 본다.
+# /mutation: 202 = 고르는 중, 204 = 없음, 200 = "timeout|class|test TAB 값" 줄들
+PIT_DIR="${PIT_DIR:-/opt/prguard/pit}"
+mutate() {
+  [ -d "$PIT_DIR" ] || return 0
+  local status=000
+  for attempt in $(seq 1 20); do
+    status=$(curl --silent --max-time 10 -o "$WORK/mutation.txt" -w '%{http_code}' -H "X-Run-Token: $RUN_TOKEN" \
+      "$CALLBACK_URL/mutation" || echo 000)
+    [ "$status" = 202 ] || break
+    sleep 3
+  done
+  [ "$status" = 200 ] || return 0
+  local limit=360 classes=() tests=()
+  while IFS=$'\t' read -r kind value || [ -n "$kind" ]; do
+    case "$value" in ''|*[!A-Za-z0-9_.]*) continue ;; esac
+    case "$kind" in
+      timeout) limit="$value" ;;
+      class) classes+=("$value" "$value\$*") ;;
+      test) tests+=("$value" "$value\$*") ;;
+    esac
+  done < "$WORK/mutation.txt"
+  [ "${#classes[@]}" -gt 0 ] && [ "${#tests[@]}" -gt 0 ] || return 0
+  progress mutating "변이 심는 중 (클래스 $((${#classes[@]} / 2))개)"
+
+  # 테스트 클래스패스: 모듈마다 "모듈 경로 줄 + 클래스패스 줄"
+  rm -rf "$WORK/cp" && mkdir -p "$WORK/cp"
+  if [ -f ./gradlew ]; then
+    cat > "$WORK/cp.gradle" <<'GRADLE'
+allprojects {
+    plugins.withId('java') {
+        def dir = System.getenv('PRGUARD_CP_DIR')
+        def name = (project.path == ':' ? 'root' : project.path.substring(1).replace(':', '_'))
+        def cp = project.sourceSets.test.runtimeClasspath
+        def projectDir = project.projectDir
+        tasks.register('prguardClasspath') {
+            dependsOn 'testClasses'
+            doLast {
+                def out = new File(dir, name + '.cp')
+                out.parentFile.mkdirs()
+                out.text = projectDir.absolutePath + '\n' + cp.files.findAll { it.exists() }.join(File.pathSeparator)
+            }
+        }
+    }
+}
+GRADLE
+    PRGUARD_CP_DIR="$WORK/cp" env -u JAVA_TOOL_OPTIONS ./gradlew prguardClasspath -I "$WORK/cp.gradle" --no-daemon -q \
+      --console=plain >>"$LOG" 2>&1 || { echo "변이 테스트: 클래스패스를 못 구함" >>"$LOG"; return 0; }
+  elif [ -f ./mvnw ] && ! grep -q '<modules>' pom.xml; then
+    env -u JAVA_TOOL_OPTIONS ./mvnw -q -B -ntp dependency:build-classpath -Dmdep.outputFile="$WORK/cp/root.mvn" \
+      -Dmdep.includeScope=test >>"$LOG" 2>&1 || { echo "변이 테스트: 클래스패스를 못 구함" >>"$LOG"; return 0; }
+    printf '%s\n%s:%s:%s' "$PWD" "$PWD/target/test-classes" "$PWD/target/classes" "$(cat "$WORK/cp/root.mvn")" > "$WORK/cp/root.cp"
+  else
+    echo "변이 테스트: 지원하지 않는 빌드 구성 (Maven 다중 모듈)" >>"$LOG"
+    return 0
+  fi
+
+  local targets tests_csv
+  targets=$(IFS=,; echo "${classes[*]}")
+  tests_csv=$(IFS=,; echo "${tests[*]}")
+  for cpfile in "$WORK"/cp/*.cp; do
+    [ -f "$cpfile" ] || continue
+    local dir cp name has=0
+    dir=$(sed -n 1p "$cpfile")
+    cp=$(sed -n 2p "$cpfile")
+    name=$(basename "$cpfile" .cp)
+    # 고른 클래스의 소스가 이 모듈에 있을 때만
+    for ((i = 0; i < ${#classes[@]}; i += 2)); do
+      [ -f "$dir/src/main/java/${classes[$i]//.//}.java" ] && has=1
+    done
+    [ "$has" = 1 ] || continue
+    printf '%s' "$cp" | tr ':' '\n' > "$WORK/pit-cp-$name.txt"
+    printf -- '-cp\n%s/*:%s\n' "$PIT_DIR" "$cp" > "$WORK/pit-java-$name.args"
+    echo "변이 테스트: $name 모듈 · 클래스 $targets · 테스트 $tests_csv" >>"$LOG"
+    ( cd "$dir" && env -u JAVA_TOOL_OPTIONS timeout "$limit" java @"$WORK/pit-java-$name.args" \
+        org.pitest.mutationtest.commandline.MutationCoverageReport \
+        --reportDir "$WORK/pit/$name" --targetClasses "$targets" --targetTests "$tests_csv" \
+        --sourceDirs "$dir/src/main/java" --outputFormats XML --timestampedReports=false --threads 2 \
+        --fullMutationMatrix=true --skipFailingTests=true --timeoutConst 8000 \
+        --classPathFile "$WORK/pit-cp-$name.txt" ) >>"$LOG" 2>&1 \
+      || echo "변이 테스트: PIT 실패 또는 시간 초과 ($name)" >>"$LOG"
+  done
+}
+
 if [ ! -f ./gradlew ] && [ ! -f ./mvnw ]; then
   report 127 "빌드 도구를 찾지 못함 (gradlew · mvnw 없음)"
   exit 0
@@ -208,6 +296,9 @@ if [ "${#EXTRA[@]}" -gt 0 ] && ! has_reports; then
   run_build
   code=$?
 fi
+
+# 테스트가 돌았을 때만 (빌드 실패면 변이를 심을 수 없다)
+has_reports && mutate
 
 progress reporting "결과 보내는 중"
 report "$code"

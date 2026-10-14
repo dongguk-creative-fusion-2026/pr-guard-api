@@ -194,7 +194,7 @@ public final class TestSelector {
         int run = (int) tests.stream().filter(TestClass::run).count();
         return new TestSelection(fullRun ? TestSelection.FULL : TestSelection.SELECTED, in.shadow(),
                 dedupe(full), in.referenceMeta(), changes, tests, tests.size(), impacted, run,
-                round(referenceSeconds), round(skippedSeconds));
+                round(referenceSeconds), round(skippedSeconds), null);
     }
 
     /** 실행할 수 있는 테스트 클래스 (최상위 클래스 FQN → 파일). @Test 류 메서드가 있는 타입의 최상위 클래스 */

@@ -36,11 +36,14 @@ public class TestSelectionService {
     private static final int MAX_EVENT_TESTS = 300;
 
     private final TestSelectionProperties props;
+    private final MutationProperties mutation;
     private final TestRunRepository runs;
     private final ObjectMapper mapper;
 
-    public TestSelectionService(TestSelectionProperties props, TestRunRepository runs, ObjectMapper mapper) {
+    public TestSelectionService(TestSelectionProperties props, MutationProperties mutation, TestRunRepository runs,
+                                ObjectMapper mapper) {
         this.props = props;
+        this.mutation = mutation;
         this.runs = runs;
         this.mapper = mapper;
     }
@@ -76,6 +79,12 @@ public class TestSelectionService {
             TestSelection selection = TestSelector.select(new TestSelector.Input(ctx.files(), ctx.changedMethods(),
                     ctx.baseIndex(), ctx.headIndex(), trace, meta, ref.map(r -> secondsByClass(r.results())).orElse(Map.of()),
                     extra, props.staticDepth(), props.mode() == TestSelectionProperties.Mode.SHADOW));
+            if (mutation.enabled()) {
+                // 변경분 변이 테스트: 바뀐 메서드에 심을 변이와 그것을 잡아 볼 테스트
+                TestSelection chosen = selection;
+                selection = MutationPlan.of(ctx.changedMethods(), ctx.headIndex(), chosen, mutation.maxClasses(),
+                        mutation.timeout().toSeconds()).map(chosen::withMutation).orElse(chosen);
+            }
             sink.done(Stage.EXEC_SELECT, message(selection), view(selection, System.currentTimeMillis() - started));
             return selection;
         } catch (RuntimeException e) {
@@ -109,6 +118,7 @@ public class TestSelectionService {
         m.put("skippedSeconds", s.skippedSeconds());
         m.put("changes", s.changes());
         m.put("tests", s.tests().stream().limit(MAX_EVENT_TESTS).toList());
+        m.put("mutation", s.mutation());
         m.put("ms", ms);
         return m;
     }

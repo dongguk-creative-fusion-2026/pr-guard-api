@@ -161,6 +161,18 @@ public class TestRunRepository {
                 .query(String.class).optional().orElse(null);
     }
 
+    public void saveMutation(long id, String mutationJson) {
+        jdbc.sql("UPDATE test_runs SET mutation = CAST(:mutation AS jsonb) WHERE id = :id")
+                .param("id", id)
+                .param("mutation", mutationJson)
+                .update();
+    }
+
+    public String mutation(long id) {
+        return jdbc.sql("SELECT mutation::text FROM test_runs WHERE id = :id").param("id", id)
+                .query(String.class).optional().orElse(null);
+    }
+
     public void saveTrace(long id, String traceJson, String evidenceDropped) {
         jdbc.sql("UPDATE test_runs SET trace = CAST(:trace AS jsonb), evidence_dropped = :dropped WHERE id = :id")
                 .param("id", id)
