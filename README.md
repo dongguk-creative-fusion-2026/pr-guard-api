@@ -85,6 +85,9 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   결과는 바뀐 메서드 줄 범위로 걸러 변이마다 잡음 · 놓침 · 안 닿음과 잡은 테스트(메서드 단위)를 남긴다.
   - `EXEC_MUTANT_SURVIVED`: 지나가는 테스트가 있는데 변이를 하나도 못 잡음(2개 이상) → MAJOR "가짜 안전", 일부만 놓침 → MINOR. 증거는 놓친 변이와 그 줄을 지나간 테스트
   - head 테스트 중 실패하는 것은 PIT 가 빼고(`skipFailingTests`), 시간(`EXEC_MUTATION_TIMEOUT`)을 넘기면 결과 없이 건너뛴다
+- **flaky 판별** (base · head 실행 안에서): 실패한 테스트 클래스(최대 20개, 증거 · 관측 테스트 제외)만 한 번 더 돌린다.
+  처음엔 실패했는데 다시 돌리니 통과한 테스트는 flaky 로 보고 회귀(BLOCKER) · 새 실패(MAJOR)에서 빼고 `EXEC_FLAKY_TEST`(MINOR)로 따로 알린다.
+  첫 결과는 그대로 보내고(`report`), 다시 돈 결과는 `rerun` 으로 따로 보낸다. `EXEC_DIFF` 의 `flaky` 에 base · head 목록
 
 ## 결정적 검사
 

@@ -38,4 +38,21 @@ class TestDiffTest {
         assertThat(diff.regressions()).isEmpty();
         assertThat(diff.newFailures()).isEmpty();
     }
+
+    @Test
+    void flaky_failedThenPassedOnRerun_isRemovedFromRegressionsAndNewFailures() {
+        List<TestCase> first = List.of(pass("A#ok"), fail("A#broken"), fail("A#timing"), fail("A#newFlaky"));
+        List<TestCase> rerun = List.of(fail("A#broken"), pass("A#timing"), pass("A#newFlaky"));
+        List<String> flaky = Flaky.find(first, rerun);
+        assertThat(flaky).containsExactly("A#timing", "A#newFlaky");
+
+        TestDiff diff = TestDiff.compare(List.of(pass("A#ok"), pass("A#broken"), pass("A#timing")), first);
+        List<String> removed = new java.util.ArrayList<>();
+        TestDiff kept = diff.without(new java.util.HashSet<>(flaky), removed);
+
+        // 다시 돌려도 실패한 것만 회귀로 남는다
+        assertThat(kept.regressions()).extracting(TestCase::name).containsExactly("A#broken");
+        assertThat(kept.newFailures()).isEmpty();
+        assertThat(removed).containsExactlyInAnyOrder("A#timing", "A#newFlaky");
+    }
 }
