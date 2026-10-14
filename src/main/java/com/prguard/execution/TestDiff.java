@@ -41,4 +41,32 @@ public record TestDiff(List<TestCase> regressions, List<TestCase> newFailures, L
         }
         return new TestDiff(regressions, newFailures, fixed, stillFailing);
     }
+
+    /**
+     * flaky(다시 돌리니 통과한) head 실패를 회귀 · 새 실패에서 뺀다.
+     *
+     * @param removed 뺀 테스트 이름을 여기에 모은다
+     */
+    public TestDiff without(java.util.Set<String> flaky, List<String> removed) {
+        if (flaky.isEmpty()) {
+            return this;
+        }
+        List<TestCase> keptRegressions = new ArrayList<>();
+        List<TestCase> keptNew = new ArrayList<>();
+        for (TestCase t : regressions) {
+            if (flaky.contains(t.name())) {
+                removed.add(t.name());
+            } else {
+                keptRegressions.add(t);
+            }
+        }
+        for (TestCase t : newFailures) {
+            if (flaky.contains(t.name())) {
+                removed.add(t.name());
+            } else {
+                keptNew.add(t);
+            }
+        }
+        return new TestDiff(keptRegressions, keptNew, fixed, stillFailing);
+    }
 }

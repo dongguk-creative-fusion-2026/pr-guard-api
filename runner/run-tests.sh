@@ -34,9 +34,17 @@ report() {
   [ -n "$error" ] && args+=(-F "error=$error")
   [ -n "${EVIDENCE_DROPPED:-}" ] && args+=(-F "evidenceDropped=$EVIDENCE_DROPPED")
   [ -f "$LOG" ] && tail -c 20000 "$LOG" > "$WORK/log-tail.txt" && args+=(-F "log=@$WORK/log-tail.txt;type=text/plain")
+  # 실패한 테스트를 다시 돌렸으면 첫 결과는 first/ 에 있다
+  local results="$WORK/src"
+  [ -d "$WORK/first" ] && results="$WORK/first"
   while IFS= read -r -d '' f; do
     args+=(-F "report=@$f;type=application/xml")
-  done < <(find "$WORK/src" \( -path '*/build/test-results/*' -o -path '*/target/surefire-reports/*' \) -name 'TEST-*.xml' -print0 2>/dev/null)
+  done < <(find "$results" \( -path '*/build/test-results/*' -o -path '*/target/surefire-reports/*' \) -name 'TEST-*.xml' -print0 2>/dev/null)
+  if [ -d "$WORK/rerun" ]; then
+    while IFS= read -r -d '' f; do
+      args+=(-F "rerun=@$f;type=application/xml")
+    done < <(find "$WORK/rerun" -name 'TEST-*.xml' -print0 2>/dev/null)
+  fi
   for f in "$WORK"/trace/trace-*.json; do
     [ -s "$f" ] && args+=(-F "trace=@$f;type=application/json")
   done
@@ -90,6 +98,25 @@ for attempt in $(seq 1 60); do
   fi
 done
 
+# Gradle 초기화 스크립트: PRGUARD_SELECTED_TESTS 파일의 클래스만 돌린다
+write_select_gradle() {
+  cat > "$WORK/select.gradle" <<'GRADLE'
+allprojects {
+    tasks.withType(Test).configureEach {
+        def names = new File(System.getenv('PRGUARD_SELECTED_TESTS')).readLines().collect { it.trim() }.findAll { it }
+        filter {
+            failOnNoMatchingTests = false
+            if (names.isEmpty()) {
+                includeTestsMatching 'prguard.selection.NoTests'
+            } else {
+                names.each { includeTestsMatching it; includeTestsMatching(it + '$*') }
+            }
+        }
+    }
+}
+GRADLE
+}
+
 # 돌릴 테스트 (영향 테스트 선택). 202 = 고르는 중, 204 = 전체, 200 = 한 줄에 하나씩 테스트 클래스 (비어 있으면 레포 테스트 없음)
 SELECTION=all
 SELECTED=()
@@ -125,21 +152,7 @@ if [ "$SELECTION" = filter ]; then
   printf '%s\n' "${SELECTED[@]}" > "$WORK/selected-tests.txt"
   export PRGUARD_SELECTED_TESTS="$WORK/selected-tests.txt"
   # Gradle: 모든 모듈의 Test 작업에 필터. 고른 클래스가 없는 모듈은 실패하지 않고 넘어간다
-  cat > "$WORK/select.gradle" <<'GRADLE'
-allprojects {
-    tasks.withType(Test).configureEach {
-        def names = new File(System.getenv('PRGUARD_SELECTED_TESTS')).readLines().collect { it.trim() }.findAll { it }
-        filter {
-            failOnNoMatchingTests = false
-            if (names.isEmpty()) {
-                includeTestsMatching 'prguard.selection.NoTests'
-            } else {
-                names.each { includeTestsMatching it; includeTestsMatching(it + '$*') }
-            }
-        }
-    }
-}
-GRADLE
+  write_select_gradle
   echo "영향 테스트 선택: 테스트 클래스 ${#SELECTED[@]}개만 실행" >>"$LOG"
   printf '  %s\n' "${SELECTED[@]}" >>"$LOG"
 else
@@ -281,6 +294,39 @@ GRADLE
   done
 }
 
+# 실패한 테스트 다시 돌리기 (flaky 판별). 실패한 테스트 클래스만 한 번 더 돌리고, 첫 결과는 first/ 에 보존한다.
+# 다시 돌린 결과는 보고서에 rerun 으로 따로 싣는다. PR Guard 의 증거 · 관측 테스트는 head 에서 일부러 실패하므로 빼다
+RESULT_FIND=( \( -path '*/build/test-results/*' -o -path '*/target/surefire-reports/*' \) -name 'TEST-*.xml' )
+rerun_failed() {
+  local failed=() cls f
+  while IFS= read -r -d '' f; do
+    grep -q '<failure\|<error' "$f" || continue
+    cls=$(basename "$f" .xml)
+    cls="${cls#TEST-}"
+    cls="${cls%%\$*}"
+    case "$cls" in ''|*[!A-Za-z0-9_.]*|*PrGuardEvidence*|*PrGuardProbe*) continue ;; esac
+    failed+=("$cls")
+  done < <(find . "${RESULT_FIND[@]}" -print0 2>/dev/null)
+  [ "${#failed[@]}" -gt 0 ] || return 0
+  mapfile -t failed < <(printf '%s\n' "${failed[@]}" | sort -u | head -20)
+  rm -rf "$WORK/first" "$WORK/rerun" && mkdir -p "$WORK/first" "$WORK/rerun"
+  find . "${RESULT_FIND[@]}" -exec cp --parents {} "$WORK/first/" \;
+  progress rerunning "실패한 테스트 ${#failed[@]}개 다시 실행 (flaky 판별)"
+  printf '%s\n' "${failed[@]}" > "$WORK/rerun-tests.txt"
+  echo "flaky 판별: 실패한 테스트 클래스 ${#failed[@]}개 다시 실행" >>"$LOG"
+  if [ -f ./gradlew ]; then
+    write_select_gradle
+    PRGUARD_SELECTED_TESTS="$WORK/rerun-tests.txt" env -u JAVA_TOOL_OPTIONS timeout 180 \
+      ./gradlew test --no-daemon --continue --console=plain -I "$WORK/select.gradle" >>"$LOG" 2>&1
+  else
+    local pattern
+    pattern=$(printf '%s*,' "${failed[@]}")
+    env -u JAVA_TOOL_OPTIONS timeout 180 ./mvnw -B -ntp test -fae "-Dtest=${pattern%,}" \
+      -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false >>"$LOG" 2>&1
+  fi
+  find . "${RESULT_FIND[@]}" -exec cp --parents {} "$WORK/rerun/" \;
+}
+
 if [ ! -f ./gradlew ] && [ ! -f ./mvnw ]; then
   report 127 "빌드 도구를 찾지 못함 (gradlew · mvnw 없음)"
   exit 0
@@ -297,8 +343,11 @@ if [ "${#EXTRA[@]}" -gt 0 ] && ! has_reports; then
   code=$?
 fi
 
-# 테스트가 돌았을 때만 (빌드 실패면 변이를 심을 수 없다)
-has_reports && mutate
+# 테스트가 돌았을 때만 (빌드 실패면 다시 돌리거나 변이를 심을 수 없다)
+if has_reports; then
+  rerun_failed
+  mutate
+fi
 
 progress reporting "결과 보내는 중"
 report "$code"

@@ -296,6 +296,17 @@ public class TestRunService {
         List<TestCase> headCases = cases(head.result);
         TestDiff diff = TestDiff.compare(repoTests(baseCases), repoTests(headCases));
         List<Finding> findings = new ArrayList<>();
+        // 다시 돌리니 통과한 head 실패는 이 PR 탓이라고 할 수 없다: 회귀 · 새 실패에서 빼고 따로 알린다
+        Set<String> headFlaky = names(runs.flaky(head.runId));
+        Set<String> baseFlaky = names(runs.flaky(base.runId));
+        List<String> flaky = new ArrayList<>();
+        diff = diff.without(headFlaky, flaky);
+        if (!flaky.isEmpty()) {
+            findings.add(new Finding("EXEC_FLAKY_TEST", Category.RISK, Severity.MINOR, null, null,
+                    "결과가 흔들리는 테스트 " + flaky.size() + "개 (판정에서 뺌)",
+                    "head 에서 실패했지만 그 클래스만 다시 돌리니 통과했습니다. 시간 · 순서 · 공유 상태에 기대는 테스트일 수 있어 회귀로 세지 않았습니다. 테스트를 안정적으로 고쳐 주세요.",
+                    String.join("\n", flaky.stream().limit(MAX_LISTED).toList()), "flaky", Finding.TOOL));
+        }
         for (TestCase t : diff.regressions()) {
             findings.add(new Finding("EXEC_TEST_REGRESSION", Category.IMPACT, Severity.BLOCKER, null, null,
                     "base 에서 통과하던 테스트가 head 에서 실패: " + shortName(t.name()),
@@ -382,7 +393,8 @@ public class TestRunService {
                 "coverage", coverage,
                 "behavior", behavior,
                 "traced", !headTrace.isEmpty(),
-                "selection", selected));
+                "selection", selected,
+                "flaky", data("head", flaky, "base", baseFlaky.stream().limit(MAX_LISTED).toList())));
         return findings;
     }
 
@@ -492,6 +504,17 @@ public class TestRunService {
             return TestSelection.off("선택 없음");
         } catch (java.util.concurrent.ExecutionException | TimeoutException e) {
             return TestSelection.off("선택 없음");
+        }
+    }
+
+    private Set<String> names(String json) {
+        if (json == null) {
+            return Set.of();
+        }
+        try {
+            return new HashSet<>(mapper.readValue(json, new TypeReference<List<String>>() {}));
+        } catch (JsonProcessingException e) {
+            return Set.of();
         }
     }
 

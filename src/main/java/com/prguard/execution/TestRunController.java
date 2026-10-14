@@ -199,6 +199,7 @@ public class TestRunController {
      * @param evidenceDropped 증거 테스트가 컴파일되지 않아 빼고 돌렸으면 그 이유
      * @param probe    관측 테스트 기록 (probe.jsonl)
      * @param mutations 변경분 변이 테스트 결과 (PIT mutations.xml, head 만)
+     * @param rerun    실패한 테스트 클래스만 다시 돌린 JUnit 보고서 (flaky 판별)
      */
     @PostMapping("/api/test-runs/{id}/report")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -210,7 +211,8 @@ public class TestRunController {
                        @RequestParam(value = "trace", required = false) List<MultipartFile> trace,
                        @RequestParam(value = "evidenceDropped", required = false) String evidenceDropped,
                        @RequestParam(value = "probe", required = false) List<MultipartFile> probe,
-                       @RequestParam(value = "mutations", required = false) List<MultipartFile> mutations)
+                       @RequestParam(value = "mutations", required = false) List<MultipartFile> mutations,
+                       @RequestParam(value = "rerun", required = false) List<MultipartFile> rerun)
             throws IOException {
         TestRun run = authorize(id, token);
         MutationPlan plan = planOf(run);
@@ -255,6 +257,17 @@ public class TestRunController {
             } catch (ExecutionException e) {
                 // 깨진 보고서 하나 때문에 전체를 버리지 않는다
             }
+        }
+        if (rerun != null && !rerun.isEmpty()) {
+            List<TestCase> again = new ArrayList<>();
+            for (MultipartFile file : rerun) {
+                try (InputStream in = file.getInputStream()) {
+                    again.addAll(JUnitReportParser.parse(in));
+                } catch (ExecutionException e) {
+                    // 깨진 보고서는 건너뛴다
+                }
+            }
+            runs.saveFlaky(id, json(Flaky.find(cases, again)));
         }
         int failures = (int) cases.stream().filter(c -> c.status() == JUnitReportParser.Status.FAILED).count();
         int errors = (int) cases.stream().filter(c -> c.status() == JUnitReportParser.Status.ERROR).count();
