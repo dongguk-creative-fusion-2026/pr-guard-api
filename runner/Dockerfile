@@ -13,6 +13,8 @@ RUN apt-get update \
     && (userdel -r ubuntu 2>/dev/null || true) \
     && useradd --uid 1000 --create-home runner
 COPY --from=agent /agent/build/libs/trace-agent.jar /opt/prguard/trace-agent.jar
+# 레포가 툴체인으로 Java 17 을 요구하는 경우가 많다 (Spring Boot 3 기본). 기본 JDK 21 옆에 17 을 둔다
+COPY --from=eclipse-temurin:17-jdk-noble /opt/java/openjdk /opt/java/17
 # 변경분 변이 테스트: PIT 명령줄 실행기 (빌드 도구 플러그인 없이 레포의 테스트 클래스패스로 돌린다)
 RUN mkdir -p /opt/prguard/pit && cd /opt/prguard/pit \
     && for j in org/pitest/pitest/1.17.0/pitest-1.17.0.jar \

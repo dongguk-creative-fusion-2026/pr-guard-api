@@ -20,6 +20,16 @@ WORK="$HOME/work"
 LOG="$WORK/build.log"
 mkdir -p "$WORK"
 
+# Gradle 툴체인이 이미지 안의 JDK(21 기본 · 17)를 찾게 한다. 레포가 languageVersion 17 을 요구해도 내려받지 않고 쓴다
+JDKS=""
+for jdk in /opt/java/17 /opt/java/openjdk; do
+  [ -x "$jdk/bin/java" ] && JDKS="${JDKS:+$JDKS,}$jdk"
+done
+if [ -n "$JDKS" ]; then
+  mkdir -p "$HOME/.gradle"
+  echo "org.gradle.java.installations.paths=$JDKS" >> "$HOME/.gradle/gradle.properties"
+fi
+
 progress() {
   # 진행 알림이 실패해도 테스트는 계속한다
   printf '{"phase":"%s","message":"%s"}' "$1" "$2" |
