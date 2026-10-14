@@ -64,6 +64,11 @@ prguard:
     memory: ${EXEC_MEMORY:3Gi}
     timeout: ${EXEC_TIMEOUT:PT15M}
     poll-interval: PT2S
+    mutation:
+      # 변경분 변이 테스트: 바뀐 메서드에 작은 버그를 심어(PIT) 테스트가 잡는지 본다. head 실행에서만
+      enabled: ${EXEC_MUTATION:true}
+      max-classes: 5
+      timeout: ${EXEC_MUTATION_TIMEOUT:PT6M}
     selection:
       # 영향 테스트 선택. on: 바뀐 코드를 지나가는 테스트만 base · head 에서 돌림,
       # shadow: 전체를 돌리되 "골랐다면"을 기록해 놓친 실패가 없는지 확인, off: 늘 전체

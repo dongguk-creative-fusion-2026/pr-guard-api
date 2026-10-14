@@ -42,6 +42,8 @@ public enum Stage {
     /** base · head 에서 clone → 빌드 → 테스트 */
     EXEC_TEST_BASE,
     EXEC_TEST_HEAD,
+    /** 바뀐 메서드에 작은 버그(변이)를 심어 테스트가 잡는지 (head 실행 안에서 PIT) */
+    EXEC_MUTATION,
     /** base 에서 통과하던 테스트가 head 에서 실패하는지 비교 */
     EXEC_DIFF,
     /** 지적마다 인덱스 · 이력 · 실행 · AI 층의 근거를 맞춰 보고, 인덱스와 어긋나는 AI 지적을 뺀다 */

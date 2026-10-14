@@ -50,7 +50,7 @@ public class TestRunService {
 
     private static final Logger log = LoggerFactory.getLogger(TestRunService.class);
     static final List<Stage> STAGES = List.of(Stage.EXEC_PREPARE, Stage.EXEC_POD_BASE, Stage.EXEC_POD_HEAD,
-            Stage.EXEC_TEST_BASE, Stage.EXEC_TEST_HEAD, Stage.EXEC_DIFF, Stage.EXEC_EVIDENCE, Stage.EXEC_SELECT);
+            Stage.EXEC_TEST_BASE, Stage.EXEC_TEST_HEAD, Stage.EXEC_DIFF, Stage.EXEC_EVIDENCE, Stage.EXEC_SELECT, Stage.EXEC_MUTATION);
     /** 러너(Pod)가 끝났는데 결과가 안 오면 이만큼 기다린 뒤 실패로 본다 */
     private static final long REPORT_GRACE_MS = 30_000;
     private static final int MAX_LISTED = 20;
@@ -246,6 +246,9 @@ public class TestRunService {
         }
         if (run.phase() != null && !Objects.equals(run.phase(), s.testPhase)) {
             s.testPhase = run.phase();
+            if ("mutating".equals(run.phase())) {
+                sink.running(Stage.EXEC_MUTATION, run.message() == null ? "변이 심는 중" : run.message());
+            }
             if (!s.podDone) {
                 // 러너가 진행을 보냈다면 컨테이너는 이미 떠 있다
                 s.podDone = true;
@@ -276,11 +279,13 @@ public class TestRunService {
     private List<Finding> compare(Side base, Side head, EventSink sink, EvidencePlan plan, TestSelection selection) {
         if (base.result == null || !"DONE".equals(base.result.status())) {
             sink.skipped(Stage.EXEC_DIFF, "base 실행이 끝나지 않아 비교하지 않음");
+            sink.skipped(Stage.EXEC_MUTATION, "base 실행이 끝나지 않음");
             return List.of();
         }
         if (head.result == null || !"DONE".equals(head.result.status())) {
             // base 는 빌드 · 테스트가 됐는데 head 는 안 됨 = 이번 PR 이 빌드를 깨뜨렸을 가능성
             String reason = head.result == null ? "실행 실패" : head.result.error();
+            sink.skipped(Stage.EXEC_MUTATION, "head 빌드 · 테스트 실패");
             sink.done(Stage.EXEC_DIFF, "head 빌드 · 테스트 실패", data("headFailed", true, "reason", reason));
             return List.of(new Finding("EXEC_HEAD_BUILD_FAILED", Category.IMPACT, Severity.BLOCKER, null, null,
                     "head 에서 빌드 · 테스트를 실행하지 못함",
@@ -356,6 +361,7 @@ public class TestRunService {
         }
 
         Map<String, Object> selected = selectionResult(selection, diff);
+        findings.addAll(mutation(selection.mutation(), head, sink));
 
         long proven = evidence.stream().filter(v -> v.kind() == EvidenceVerdict.Kind.PROVEN).count();
         String summary = diff.regressions().isEmpty() && diff.newFailures().isEmpty()
@@ -378,6 +384,75 @@ public class TestRunService {
                 "traced", !headTrace.isEmpty(),
                 "selection", selected));
         return findings;
+    }
+
+    /**
+     * 변경분 변이 테스트: 바뀐 메서드에 심은 버그를 테스트가 잡았나.
+     * 지나가는 테스트가 있는데 하나도 못 잡으면 "가짜 안전"이라 MAJOR, 일부만 놓치면 MINOR.
+     */
+    private List<Finding> mutation(MutationPlan plan, Side head, EventSink sink) {
+        if (plan == null) {
+            sink.skipped(Stage.EXEC_MUTATION, "변이를 심을 바뀐 메서드 없음");
+            return List.of();
+        }
+        List<MutationReport.Mutant> mutants = mutants(runs.mutation(head.runId));
+        if (mutants == null) {
+            sink.skipped(Stage.EXEC_MUTATION, "변이 결과 없음 (시간 초과 · 빌드 도구 미지원 · PIT 실패)");
+            return List.of();
+        }
+        List<MutationReport.MethodScore> scores = MutationReport.byMethod(mutants, plan);
+        List<Finding> findings = mutationFindings(scores);
+        int killed = scores.stream().mapToInt(MutationReport.MethodScore::killed).sum();
+        int survived = scores.stream().mapToInt(MutationReport.MethodScore::survived).sum();
+        int uncovered = scores.stream().mapToInt(MutationReport.MethodScore::uncovered).sum();
+        int covered = killed + survived;
+        List<Map<String, Object>> methods = scores.stream().map(s -> data("id", s.id(), "file", s.file(), "line", s.line(),
+                "total", s.total(), "killed", s.killed(), "survived", s.survived(), "uncovered", s.uncovered(),
+                "mutants", s.mutants().stream().limit(40).map(m -> data("line", m.line(), "mutator", m.mutator(),
+                        "description", m.description(), "status", m.status(), "killers", m.killers(),
+                        "covering", m.covering().stream().limit(5).toList())).toList())).toList();
+        List<Map<String, Object>> tests = MutationReport.byTest(mutants).entrySet().stream()
+                .map(e -> data("className", e.getKey(), "killed", e.getValue()[0], "coveredOnly", e.getValue()[1])).toList();
+        sink.done(Stage.EXEC_MUTATION, covered == 0 ? "변이 " + (killed + survived + uncovered) + "개 · 테스트가 닿지 않음"
+                        : "변이 " + (killed + survived + uncovered) + "개 · 잡음 " + killed + " · 놓침 " + survived
+                        + (uncovered > 0 ? " · 안 닿음 " + uncovered : ""),
+                data("score", covered == 0 ? -1 : Math.round(killed * 100.0 / covered), "killed", killed, "survived", survived,
+                        "uncovered", uncovered, "classes", plan.classes(), "methods", methods, "tests", tests));
+        return findings;
+    }
+
+    /** 놓친 변이가 있는 바뀐 메서드마다 지적 하나 */
+    static List<Finding> mutationFindings(List<MutationReport.MethodScore> scores) {
+        List<Finding> findings = new ArrayList<>();
+        for (MutationReport.MethodScore s : scores) {
+            if (s.survived() == 0) {
+                continue;
+            }
+            List<String> survivors = s.mutants().stream().filter(MutationReport.Mutant::survived).limit(MAX_LISTED)
+                    .map(m -> m.line() + "줄 " + m.description()
+                            + (m.covering().isEmpty() ? "" : " (지나간 테스트: " + shortName(m.covering().get(0)) + ")"))
+                    .toList();
+            boolean none = s.killed() == 0 && s.survived() >= 2;
+            findings.add(new Finding("EXEC_MUTANT_SURVIVED", Category.RISK, none ? Severity.MAJOR : Severity.MINOR,
+                    s.file(), s.line(),
+                    (none ? "테스트가 지나가지만 심은 버그를 하나도 못 잡음: " : "심은 버그를 테스트가 놓침: ") + s.id()
+                            + " (" + s.survived() + "/" + (s.killed() + s.survived()) + ")",
+                    none ? "이 메서드를 지나가는 테스트는 있지만 결과를 검증하지 않습니다. 아래처럼 코드를 망가뜨려도 테스트가 모두 통과했습니다."
+                            : "이 메서드에 심은 작은 버그 중 일부를 테스트가 잡지 못했습니다. 아래 경우를 검증하는 테스트를 더해 주세요.",
+                    String.join("\n", survivors), "mutation:" + s.id(), Finding.TOOL));
+        }
+        return findings;
+    }
+
+    private List<MutationReport.Mutant> mutants(String json) {
+        if (json == null) {
+            return null;
+        }
+        try {
+            return mapper.readValue(json, new TypeReference<List<MutationReport.Mutant>>() {});
+        } catch (JsonProcessingException e) {
+            return null;
+        }
     }
 
     /**

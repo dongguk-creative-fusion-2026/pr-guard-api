@@ -145,6 +145,39 @@ public class TestRunController {
         return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body.toString());
     }
 
+    /**
+     * head 러너가 테스트 뒤에 받아 가는 변이 계획. 202 = 고르는 중, 204 = 없음(base · 꺼짐 · 심을 곳 없음),
+     * 200 = "timeout TAB 초", "class TAB 클래스", "test TAB 테스트 클래스" 줄들
+     */
+    @GetMapping("/api/test-runs/{id}/mutation")
+    public ResponseEntity<String> mutation(@PathVariable long id, @RequestHeader("X-Run-Token") String token) {
+        TestRun run = authorize(id, token);
+        if ("PENDING".equals(run.selectionState())) {
+            return ResponseEntity.accepted().build();
+        }
+        MutationPlan plan = "HEAD".equals(run.side()) ? planOf(run) : null;
+        if (plan == null) {
+            return ResponseEntity.noContent().build();
+        }
+        StringBuilder body = new StringBuilder("timeout\t").append(plan.timeoutSeconds()).append('\n');
+        plan.classes().stream().filter(c -> CLASS_NAME.matcher(c).matches())
+                .forEach(c -> body.append("class\t").append(c).append('\n'));
+        plan.tests().stream().filter(c -> CLASS_NAME.matcher(c).matches())
+                .forEach(c -> body.append("test\t").append(c).append('\n'));
+        return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body.toString());
+    }
+
+    private MutationPlan planOf(TestRun run) {
+        if (run.selection() == null) {
+            return null;
+        }
+        try {
+            return mapper.readValue(run.selection(), TestSelection.class).mutation();
+        } catch (JsonProcessingException e) {
+            return null;
+        }
+    }
+
     /** @param phase cloning, building … */
     public record Progress(String phase, String message) {
     }
@@ -165,6 +198,7 @@ public class TestRunController {
      * @param trace    JVM 마다 남긴 호출 기록 (trace-*.json)
      * @param evidenceDropped 증거 테스트가 컴파일되지 않아 빼고 돌렸으면 그 이유
      * @param probe    관측 테스트 기록 (probe.jsonl)
+     * @param mutations 변경분 변이 테스트 결과 (PIT mutations.xml, head 만)
      */
     @PostMapping("/api/test-runs/{id}/report")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -175,9 +209,18 @@ public class TestRunController {
                        @RequestParam(value = "error", required = false) String error,
                        @RequestParam(value = "trace", required = false) List<MultipartFile> trace,
                        @RequestParam(value = "evidenceDropped", required = false) String evidenceDropped,
-                       @RequestParam(value = "probe", required = false) List<MultipartFile> probe)
+                       @RequestParam(value = "probe", required = false) List<MultipartFile> probe,
+                       @RequestParam(value = "mutations", required = false) List<MultipartFile> mutations)
             throws IOException {
-        authorize(id, token);
+        TestRun run = authorize(id, token);
+        MutationPlan plan = planOf(run);
+        if (mutations != null && !mutations.isEmpty() && plan != null) {
+            List<InputStream> xmls = new ArrayList<>();
+            for (MultipartFile file : mutations) {
+                xmls.add(file.getInputStream());
+            }
+            runs.saveMutation(id, json(MutationReport.parse(xmls, plan)));
+        }
         if (probe != null && !probe.isEmpty()) {
             List<byte[]> parts = new ArrayList<>();
             for (MultipartFile file : probe) {
@@ -220,7 +263,7 @@ public class TestRunController {
                 json(cases.size() > MAX_CASES ? cases.subList(0, MAX_CASES) : cases), logTail);
     }
 
-    private void authorize(long id, String token) {
+    private TestRun authorize(long id, String token) {
         TestRun run = runs.find(id)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "TEST_RUN_NOT_FOUND", "실행 기록이 없습니다: " + id));
         byte[] expected = run.tokenHash().getBytes(StandardCharsets.UTF_8);
@@ -231,6 +274,7 @@ public class TestRunController {
         if (run.finished()) {
             throw new ApiException(HttpStatus.CONFLICT, "TEST_RUN_FINISHED", "이미 끝난 실행입니다: " + id);
         }
+        return run;
     }
 
     private JsonNode tree(String json) {

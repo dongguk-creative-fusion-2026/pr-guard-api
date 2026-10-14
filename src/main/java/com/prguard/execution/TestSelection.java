@@ -16,6 +16,7 @@ import java.util.List;
  * @param run         실제로 돌릴 테스트 클래스 수 (전체 실행이면 total)
  * @param referenceSeconds 기준 기록에서 전체 테스트가 걸린 시간 (초). 기록에 시간이 없으면 0
  * @param skippedSeconds   거른 테스트가 기준 기록에서 걸린 시간 (초) = 아낀 시간 추정
+ * @param mutation         head 에서 변이를 심을 곳 (변경분 변이 테스트). 없으면 null
  */
 public record TestSelection(
         String mode,
@@ -28,7 +29,8 @@ public record TestSelection(
         int impacted,
         int run,
         double referenceSeconds,
-        double skippedSeconds) {
+        double skippedSeconds,
+        MutationPlan mutation) {
 
     public static final String SELECTED = "SELECTED";
     public static final String FULL = "FULL";
@@ -36,7 +38,12 @@ public record TestSelection(
 
     /** 선택을 쓰지 않을 때 (꺼짐 · 인덱스 없음 · 오류) */
     public static TestSelection off(String reason) {
-        return new TestSelection(OFF, false, List.of(reason), null, List.of(), List.of(), 0, 0, 0, 0, 0);
+        return new TestSelection(OFF, false, List.of(reason), null, List.of(), List.of(), 0, 0, 0, 0, 0, null);
+    }
+
+    public TestSelection withMutation(MutationPlan plan) {
+        return new TestSelection(mode, shadow, fullReasons, reference, changes, tests, total, impacted, run,
+                referenceSeconds, skippedSeconds, plan);
     }
 
     /** 러너에 넘길 클래스 목록. null 이면 전체를 돌린다 */

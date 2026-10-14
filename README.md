@@ -74,6 +74,18 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 - **그림자 모드**(`EXEC_TEST_SELECTION=shadow`): 전체를 돌리되 "골랐다면"을 기록하고, 걸렀을 테스트에서 회귀 · 새 실패가 나오면 `EXEC_DIFF` 의 `selection.missed` 에 남긴다. 선택 규칙이 놓친 것이 없는지 실제 PR 로 확인할 때 쓴다.
 - 일부만 돈 실행의 호출 기록은 기준으로도, 화면의 런타임 오버레이로도 쓰지 않는다 (전체 실행 기록만).
 
+## 테스트 신뢰도
+
+"테스트가 통과했다"가 아니라 "테스트가 버그를 실제로 잡느냐"를 본다.
+
+- **정적** (`test-trust` 검사기, 아래 표): 이번 PR 이 테스트를 약하게 만들었나 · 새 테스트가 아무것도 검증하지 않나.
+- **변경분 변이 테스트** (`EXEC_MUTATION`, head 실행 안에서): PR 이 본문을 바꾸거나 새로 만든 메서드가 있는 클래스(최대 5개)에
+  PIT 로 작은 버그(조건 반전 · 경계 변경 · null 반환 · 호출 삭제 …)를 심고, 영향 테스트 선택이 고른 테스트로 돌린다.
+  러너 이미지에 PIT 명령줄 실행기가 있고, 빌드 도구에서는 테스트 클래스패스만 받아 온다 (Gradle 은 `-I` 초기화 스크립트, Maven 은 단일 모듈만).
+  결과는 바뀐 메서드 줄 범위로 걸러 변이마다 잡음 · 놓침 · 안 닿음과 잡은 테스트(메서드 단위)를 남긴다.
+  - `EXEC_MUTANT_SURVIVED`: 지나가는 테스트가 있는데 변이를 하나도 못 잡음(2개 이상) → MAJOR "가짜 안전", 일부만 놓침 → MINOR. 증거는 놓친 변이와 그 줄을 지나간 테스트
+  - head 테스트 중 실패하는 것은 PIT 가 빼고(`skipFailingTests`), 시간(`EXEC_MUTATION_TIMEOUT`)을 넘기면 결과 없이 건너뛴다
+
 ## 결정적 검사
 
 AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확인한 지적(CONFIRMED)이 된다. A(의도 대비)는 아직 결정적 검사가 없어 LLM 리뷰가 맡는다.
@@ -158,6 +170,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | GET | `/api/reviews/{id}/runtime` | 리뷰의 런타임 호출 기록 `{base, head}` |
 | GET | `/api/projects/{id}/runtime` | 프로젝트의 가장 최근 head 호출 기록 (코드 그래프 · 시티 오버레이). 없으면 204 |
 | GET | `/api/test-runs/{id}/extra-files` | 러너 전용 (`X-Run-Token`). 증거 테스트: 200 파일 · 202 만드는 중 · 204 없음 |
+| GET | `/api/test-runs/{id}/mutation` | 러너 전용 (`X-Run-Token`, head 만). 변이 계획: 200 `timeout · class · test` 줄 · 202 고르는 중 · 204 없음 |
 | GET | `/api/test-runs/{id}/selection` | 러너 전용 (`X-Run-Token`). 돌릴 테스트: 200 한 줄에 하나씩 테스트 클래스 · 202 고르는 중 · 204 전체 |
 | POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
@@ -204,6 +217,7 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `EXEC_CPU` · `EXEC_MEMORY` · `EXEC_TIMEOUT` | `2` · `3Gi` · `PT15M` | 러너 하나의 자원과 제한 시간 |
 | `EVIDENCE_ENABLED` | `true` | 실행 검증이 켜져 있을 때 증거 테스트를 만들지 (`OPENAI_API_KEY` 필요) |
 | `EXEC_TEST_SELECTION` | `on` | 영향 테스트 선택. `on`: 영향 있는 테스트만, `shadow`: 전체를 돌리며 놓친 실패 확인, `off`: 늘 전체 |
+| `EXEC_MUTATION` · `EXEC_MUTATION_TIMEOUT` | `true` · `PT6M` | 변경분 변이 테스트를 할지, 러너에서 PIT 에 주는 시간 |
 | `EXEC_SELECTION_MAX_AGE` | `P14D` | 기준(전체 실행 기록)이 이보다 오래되면 전체를 돌린다 |
 | `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
 | `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
