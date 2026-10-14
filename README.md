@@ -2,7 +2,7 @@
 
 PR Guard 백엔드. AI 네이티브 개발 환경에서 **속도는 그대로 두고 코드 품질을 지키는 PR 검증 계층**이다.
 
-등록된 public GitHub 레포의 열린 PR 을 주기적으로 조회하고, 새 커밋이 보이면 **diff · 레포 전체 · git 이력 · PR 설명**을 함께 분석하고, 켜져 있으면 **base · head 에서 테스트를 실제로 돌려** 근거를 만든 뒤 판정해 PR 에 리뷰를 남긴다. LLM 의 말만 믿지 않는다: 근거는 정적 분석 · 이력 통계 · 실행 결과로 만들고, AI 지적은 그 층들에 비춰 확인하고(인덱스와 어긋나면 뺀다), 판정은 규칙이 계산한다.
+등록된 public GitHub 레포의 PR 을 웹훅으로 바로 받고(주기적인 조회가 놓친 것을 메운다), 새 커밋이 보이면 **diff · 레포 전체 · git 이력 · PR 설명**을 함께 분석하고, 켜져 있으면 **영향 있는 테스트만 골라 base · head 에서 실제로 돌려** 근거를 만든 뒤 판정해 PR 에 리뷰를 남긴다. LLM 의 말만 믿지 않는다: 근거는 정적 분석 · 이력 통계 · 실행 결과로 만들고, AI 지적은 그 층들에 비춰 확인하고(인덱스와 어긋나면 뺀다), 판정은 규칙이 계산한다.
 
 - 프론트엔드: [pr-guard-web](https://github.com/dongguk-creative-fusion-2026/pr-guard-web)
 - 테스트·평가용 레포: [pr-guard-sandbox](https://github.com/dongguk-creative-fusion-2026/pr-guard-sandbox)
