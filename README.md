@@ -43,6 +43,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   │   ├ 쿠버네티스 Job 으로 base · head 러너(runner/) 기동 → clone · 빌드 · 테스트 → JUnit 결과 콜백
   │   │   ├ TestSelector     영향 테스트 선택: 바뀐 메서드를 지나가는 테스트 클래스만 base · head 에서 돌린다 (아래 "영향 테스트 선택")
   │   │   ├ EvidenceService  본문만 바뀐 메서드마다 "base 통과 · head 실패" 증거 테스트 생성 → 러너가 받아 함께 실행
+  │   │   ├ HttpProbePlanner 바뀐 컨트롤러 GET 엔드포인트를 base · head 에서 같은 요청으로 호출하는 관측 테스트 (아래 "HTTP 동작 diff")
   │   │   ├ trace-agent      테스트 중 실제 호출 기록 (호출 횟수 · 간선 · 테스트별로 지나간 함수)
   │   │   └ 비교: 회귀(BLOCKER) · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화(MAJOR) · 테스트가 안 지나간 변경(MINOR)
   │   ├ FindingGrounder 근거 확인: 지적마다 코드 인덱스 · git 이력 · 실행 · AI 층에 비춰 본다
@@ -73,6 +74,17 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 - 단계 `EXEC_SELECT` 와 실행 기록의 `selection` 에 테스트 클래스마다 돌렸는지 · 이유(기록 · 호출 그래프 · 바뀐 테스트 · 기록에 없음 · 영향 없음)와 기준 기록에서 걸린 시간을 남긴다. 화면의 "테스트 선택"이 그대로 그린다.
 - **그림자 모드**(`EXEC_TEST_SELECTION=shadow`): 전체를 돌리되 "골랐다면"을 기록하고, 걸렀을 테스트에서 회귀 · 새 실패가 나오면 `EXEC_DIFF` 의 `selection.missed` 에 남긴다. 선택 규칙이 놓친 것이 없는지 실제 PR 로 확인할 때 쓴다.
 - 일부만 돈 실행의 호출 기록은 기준으로도, 화면의 런타임 오버레이로도 쓰지 않는다 (전체 실행 기록만).
+
+## HTTP 동작 diff
+
+사용자가 체감하는 변화를 보여 준다. 예: `GET /owners?lastName=Davis` 가 base 에서는 `302 → /owners/1`, head 에서는 `200 화면 owners/ownersList · owners=2개`.
+
+1. **대상**: 이번 PR 이 본문을 바꾸거나 새로 만든 `@Controller` · `@RestController` 메서드 중 GET 매핑(`@GetMapping`, 메서드 없는 · GET `@RequestMapping`)인 것 (최대 3개). 클래스의 `@RequestMapping` 경로를 앞에 붙인다. 상태를 바꿀 수 있는 POST · PUT · DELETE 는 보내지 않는다.
+2. **요청**: head 의 기존 테스트에서 MockMvc `get("/경로?쿼리", 경로 변수…)` · `.param("이름", "값")` 의 문자열 상수를 모아 매핑 경로와 맞는 것을 쓴다 (핸들러마다 최대 6개). 없으면 경로 변수를 `1` 로 채운 기본 요청 하나.
+3. **관측 테스트**: `@SpringBootApplication` 패키지에 `PrGuardProbeHttp{N}Test` 를 만들어 `@SpringBootTest` + MockMvc 로 같은 요청을 base · head 에서 보낸다. LLM 없이 만들고, Spring Boot 테스트(`spring-boot-starter-test`)가 있는 레포에서만 만든다.
+4. **응답 요약**: 상태 코드, 리다이렉트 위치, 화면 이름, 모델 값(컬렉션 · 페이지는 개수, 최대 5개), 처리 중 예외, JSON 본문(120자까지).
+
+요약이 다른 요청은 다른 관측 테스트와 같이 `EXEC_BEHAVIOR_DIFF`(MAJOR)로 핸들러 메서드에 붙고, PR 화면의 "동작 diff" 카드에 요청마다 base · head 응답이 나온다.
 
 
 ## 테스트 신뢰도

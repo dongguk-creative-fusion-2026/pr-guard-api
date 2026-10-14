@@ -45,9 +45,12 @@ public class EvidenceService {
 
     public EvidencePlan plan(AnalysisContext ctx, EventSink sink) {
         List<EvidencePlan.Target> changed = changedTargets(ctx);
+        // HTTP 동작 diff 관측 테스트는 LLM 없이 만든다 (바뀐 컨트롤러 GET 핸들러에 기존 테스트의 요청을 보낸다)
+        List<EvidenceTest> http = httpProbes(ctx);
+        String httpNote = http.isEmpty() ? "" : " · HTTP 관측 " + http.size() + "개";
         if (!props.on() || generator == null) {
-            sink.skipped(Stage.EXEC_EVIDENCE, !props.on() ? "증거 테스트 꺼짐" : "OPENAI_API_KEY 미설정");
-            return new EvidencePlan(List.of(), changed);
+            sink.skipped(Stage.EXEC_EVIDENCE, (!props.on() ? "증거 테스트 꺼짐" : "OPENAI_API_KEY 미설정") + httpNote);
+            return new EvidencePlan(http, changed);
         }
         Checkout checkout = ctx.checkout().orElse(null);
         if (checkout == null || !ctx.indexed()) {
@@ -57,8 +60,8 @@ public class EvidenceService {
         long started = System.currentTimeMillis();
         List<EvidenceRequest.Target> targets = targets(ctx, checkout);
         if (targets.isEmpty()) {
-            sink.skipped(Stage.EXEC_EVIDENCE, "본문만 바뀐 메서드가 없음");
-            return new EvidencePlan(List.of(), changed);
+            sink.skipped(Stage.EXEC_EVIDENCE, "본문만 바뀐 메서드가 없음" + httpNote);
+            return new EvidencePlan(http, changed);
         }
         sink.running(Stage.EXEC_EVIDENCE, "바뀐 메서드 " + targets.size() + "개 겨냥 · " + generator.name());
         try {
@@ -67,8 +70,8 @@ public class EvidenceService {
                     p.body(), targets));
             List<EvidenceTest> evidence = tests.stream().filter(t -> !t.probe()).toList();
             List<EvidenceTest> probes = tests.stream().filter(EvidenceTest::probe).toList();
-            sink.done(Stage.EXEC_EVIDENCE, tests.isEmpty() ? "동작이 바뀐 메서드 없음"
-                            : "증거 테스트 " + evidence.size() + "개 · 관측 " + probes.size() + "개",
+            sink.done(Stage.EXEC_EVIDENCE, (tests.isEmpty() ? "동작이 바뀐 메서드 없음"
+                            : "증거 테스트 " + evidence.size() + "개 · 관측 " + probes.size() + "개") + httpNote,
                     data("generator", generator.name(),
                             "targets", targets.stream().map(EvidenceRequest.Target::methodId).toList(),
                             "tests", evidence.stream().map(t -> data("className", t.className(), "path", t.path(),
@@ -76,11 +79,28 @@ public class EvidenceService {
                             "probes", probes.stream().map(t -> data("className", t.className(), "path", t.path(),
                                     "target", t.target(), "code", t.code())).toList(),
                             "ms", System.currentTimeMillis() - started));
-            return new EvidencePlan(tests, changed);
+            List<EvidenceTest> all = new ArrayList<>(tests);
+            all.addAll(http);
+            return new EvidencePlan(all, changed);
         } catch (RuntimeException e) {
             log.warn("증거 테스트 생성 실패: {}", e.toString());
             sink.failed(Stage.EXEC_EVIDENCE, e.getMessage());
-            return new EvidencePlan(List.of(), changed);
+            return new EvidencePlan(http, changed);
+        }
+    }
+
+    /** 바뀐 컨트롤러 GET 핸들러의 HTTP 관측 테스트. Spring Boot 테스트가 없는 레포 · 인덱스 없음이면 비어 있다 */
+    static List<EvidenceTest> httpProbes(AnalysisContext ctx) {
+        Checkout checkout = ctx.checkout().orElse(null);
+        if (checkout == null || !ctx.indexed()) {
+            return List.of();
+        }
+        try {
+            boolean boot = testLibraries(checkout.headDir()).contains("spring-boot-test");
+            return HttpProbePlanner.plan(ctx.changedMethods(), ctx.headIndex(), checkout.headDir(), boot);
+        } catch (RuntimeException e) {
+            log.warn("HTTP 관측 테스트를 만들지 못함: {}", e.toString());
+            return List.of();
         }
     }
 
@@ -150,6 +170,9 @@ public class EvidenceService {
         String text = build.toString().toLowerCase(Locale.ROOT);
         List<String> libs = new ArrayList<>(List.of("junit-jupiter"));
         boolean boot = text.contains("spring-boot-starter-test");
+        if (boot) {
+            libs.add("spring-boot-test");
+        }
         if (boot || text.contains("mockito")) {
             libs.add("mockito");
         }
