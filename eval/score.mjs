@@ -2,7 +2,7 @@
 // 평가용 PR 세트(cases.json)에 대한 리뷰 결과를 채점한다.
 //
 //   기준선(diff 만 보는 LLM 리뷰):  node eval/score.mjs --baseline eval/baseline.json
-//   PR Guard (배포된 API):          node eval/score.mjs --api https://... --project 1 [--run 2]
+//   PR Guard (배포된 API):          [API_TOKEN=...] node eval/score.mjs --api https://... --project 1 [--run 2]
 //
 // 1차 자동 채점이다. 지적 하나(표의 한 행)가 정답의 파일 이름과 키워드를 함께 언급하면 "탐지"로 본다.
 // 최종 결과는 사람이 지적 내용을 읽고 확정한다.
@@ -24,6 +24,8 @@ const cases = JSON.parse(readFileSync(args.cases ?? join(here, 'cases.json'), 'u
 const SEVERITIES = ['BLOCKER', 'MAJOR', 'MINOR'];
 const LAYERS = ['인덱스', '이력', '실행', 'AI'];
 const LAYER_LABEL = { INDEX: '인덱스', HISTORY: '이력', RUNTIME: '실행', AI: 'AI' };
+// 배포된 API 에 API_TOKEN 이 걸려 있으면 같은 값을 환경변수로 넘긴다
+const apiHeaders = process.env.API_TOKEN ? { 'X-Api-Token': process.env.API_TOKEN } : {};
 
 /** 리뷰 하나 → { verdict, seconds, refuted, units: [{ text, severity, layers }] } */
 async function loadReviews() {
@@ -35,7 +37,7 @@ async function loadReviews() {
     console.error('사용법: --baseline <file> 또는 --api <url> --project <id> [--run <n>]');
     process.exit(1);
   }
-  const list = await (await fetch(`${args.api}/api/projects/${args.project}/reviews?limit=200`)).json();
+  const list = await (await fetch(`${args.api}/api/projects/${args.project}/reviews?limit=200`, { headers: apiHeaders })).json();
   const result = new Map();
   for (const c of cases) {
     const candidates = list
@@ -43,7 +45,7 @@ async function loadReviews() {
       .filter((r) => !args.run || r.run === Number(args.run))
       .sort((a, b) => b.id - a.id);
     if (candidates.length === 0) continue;
-    const detail = await (await fetch(`${args.api}/api/reviews/${candidates[0].id}`)).json();
+    const detail = await (await fetch(`${args.api}/api/reviews/${candidates[0].id}`, { headers: apiHeaders })).json();
     const { startedAt, finishedAt } = detail.review;
     const kept = detail.findings.filter((f) => f.grounding?.status !== 'REFUTED');
     result.set(c.pr, {

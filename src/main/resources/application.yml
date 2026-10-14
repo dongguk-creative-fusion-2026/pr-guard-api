@@ -21,6 +21,9 @@ management:
         include: health
 
 prguard:
+  api:
+    # 있으면 /api/** 는 X-Api-Token 헤더가 이 값이어야 받는다 (pr-guard-web 의 API_TOKEN 과 같은 값). 콜백(웹훅 · 러너 · 그래프)은 제외
+    token: ${API_TOKEN:}
   github:
     api-url: https://api.github.com
     token: ${GITHUB_TOKEN:}

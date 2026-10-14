@@ -112,6 +112,8 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 
 ## API
 
+`API_TOKEN` 이 있으면 `/api/**` 는 `X-Api-Token` 헤더가 같은 값이어야 받는다 (없거나 틀리면 401 `API_TOKEN_INVALID`). 화면(pr-guard-web 서버)만 이 토큰을 가진다. 자기 방식으로 확인하는 콜백은 뺀다: 웹훅(HMAC 서명), 러너(`X-Run-Token`), 그래프 워크플로의 progress · result(runId 확인). `/actuator/health` 도 열려 있다.
+
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | GET | `/api/projects` | 프로젝트 목록 |
@@ -141,7 +143,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | GET | `/api/test-runs/{id}/extra-files` | 러너 전용 (`X-Run-Token`). 증거 테스트: 200 파일 · 202 만드는 중 · 204 없음 |
 | POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
-오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502), `WEBHOOK_DISABLED`(404), `WEBHOOK_SIGNATURE_INVALID`(401), `WEBHOOK_INVALID`(400)
+오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502), `WEBHOOK_DISABLED`(404), `WEBHOOK_SIGNATURE_INVALID`(401), `WEBHOOK_INVALID`(400), `API_TOKEN_INVALID`(401)
 
 ## 평가
 
@@ -157,7 +159,7 @@ OPENAI_API_KEY=... node eval/baseline.mjs
 node eval/score.mjs --baseline eval/baseline.json
 
 # PR Guard: 배포된 API 의 최신 리뷰 (특정 차수만 보려면 --run N)
-node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --project 1
+API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --project 1
 ```
 
 ## 환경변수
@@ -165,6 +167,7 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `PGHOST` `PGPORT` `PGDATABASE` `PGUSER` `PGPASSWORD` | localhost / 5432 / prguard / prguard / prguard | Railway Postgres 를 붙이면 자동 주입 |
+| `API_TOKEN` | (없음) | 있으면 `/api/**` 에 `X-Api-Token` 이 이 값이어야 한다. pr-guard-web 의 `API_TOKEN` 과 같은 값 |
 | `GITHUB_TOKEN` | (없음) | 코멘트를 다는 봇 계정 PAT. 없으면 읽기만 한다 (rate limit 60/h) |
 | `GITHUB_COMMENT_ENABLED` | `true` | `false` 면 토큰이 있어도 코멘트를 달지 않는다 (로컬 개발용) |
 | `OPENAI_API_KEY` | (없음) | 없으면 LLM 리뷰 없이 정적 분석만 |
