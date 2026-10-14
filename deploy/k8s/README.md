@@ -65,50 +65,17 @@ API 환경변수:
 
 GHCR 패키지가 비공개면 `prguard-runs` 에 imagePullSecret 을 두거나 패키지를 공개로 바꾼다.
 
+러너 이미지에는 JDK 21(기본)과 17 이 있고, Gradle 툴체인이 둘을 찾는다. 다른 버전을 요구하는 레포는 빌드가 실패한다.
+
 ## 로컬에서 확인 (minikube)
 
-API · 웹은 이 PC 에서, 러너는 minikube 에서 돈다. PR 코멘트는 끄고(읽기만) 돌린다.
-
 ```bash
-# 1. 클러스터와 러너 이미지 (이미지는 minikube 안에서 바로 빌드)
-minikube start --driver=docker --memory=6144 --cpus=4
-minikube image build -t pr-guard-test-runner:dev runner
+minikube start --memory=6144 --cpus=4
+docker build -t pr-guard-test-runner:dev runner && minikube image load pr-guard-test-runner:dev
 kubectl --context minikube apply -k deploy/k8s
-
-# 2. DB
-docker compose up -d postgres
-
-# 3. API (이 PC). 러너 Pod 는 host.docker.internal 로 이 API 에 결과를 보낸다
-#    GITHUB_TOKEN 을 비우면 PR 코멘트 · 그래프 워크플로가 돌지 않는다 (읽기만, 무인증 한도 60회/시간)
-./gradlew bootJar
-EXEC_RUNNER=kubernetes EXEC_IMAGE=pr-guard-test-runner:dev EXEC_CALLBACK_URL=http://host.docker.internal:8080 \
-  GITHUB_TOKEN= GITHUB_COMMENT_ENABLED=false java -jar build/libs/app.jar
-
-# Pod 에서 API 가 보이는지
-kubectl run nettest --rm -i --restart=Never --image=pr-guard-test-runner:dev --image-pull-policy=Never \
-  --command -- curl -s http://host.docker.internal:8080/actuator/health
-
-# 4. 웹 (pr-guard-web)
-API_BASE_URL=http://localhost:8080 npm run build && npm start
+# API 컨테이너를 minikube 네트워크에 붙이고 위 kubeconfig(서버 https://192.168.49.2:8443)를 넣는다
+#   EXEC_RUNNER=kubernetes EXEC_IMAGE=pr-guard-test-runner:dev EXEC_CALLBACK_URL=http://<API 컨테이너 IP>:8080
 ```
-
-시연 순서 (sandbox 또는 테스트가 많은 `demo-petclinic`):
-
-1. 화면에서 `dongguk-creative-fusion-2026/pr-guard-sandbox` 를 등록하고 설정에서 실행 검증을 켠다.
-2. 첫 리뷰는 기준 기록이 없어 **전체 실행**한다. 이 실행의 호출 기록이 다음 PR 의 기준이 된다.
-3. 같은 base 의 다른 PR 을 다시 리뷰하면 **선택 실행 · 변이 테스트 · flaky 재실행**이 돌고, 리뷰 화면의 "테스트 선택"에서 장면이 나온다.
-
-열린 PR 이 많으면 등록 직후 모두 리뷰 대기열에 들어간다. 시연할 PR 만 남기려면 DB 에서 나머지 대기 리뷰를 `SUPERSEDED` 로 바꾼다.
-
-```bash
-docker compose exec -T postgres psql -U prguard -d prguard \
-  -c "UPDATE reviews SET status='SUPERSEDED', finished_at=now() WHERE status='PENDING' AND pr_number <> 23;"
-```
-
-러너 이미지에는 JDK 21(기본)과 17 이 있고, Gradle 툴체인이 둘을 찾는다 (`org.gradle.java.installations.paths`). 다른 버전을 요구하는 레포는 빌드가 실패한다.
-
-Windows 에서 Docker Desktop 이 `remove …\Docker\run\*.sock: The file cannot be accessed by the system` 으로 멈추면
-Docker 를 끄고 `%LOCALAPPDATA%\Docker\run` · `%LOCALAPPDATA%\docker-secrets-engine` 폴더를 다른 이름으로 옮긴 뒤 다시 켠다 (남은 소켓 파일을 지우지 못해 생기는 문제).
 
 쿠버네티스 없이 흐름만 보려면 `EXEC_RUNNER=docker` (API 가 있는 곳의 docker 로 러너를 띄운다).
 
