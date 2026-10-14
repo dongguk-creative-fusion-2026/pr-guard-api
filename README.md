@@ -23,6 +23,12 @@ PollScheduler (POLL_INTERVAL 마다) / POST /api/projects/{id}/poll
   └ GET /pulls?state=open (ETag, 변경 없으면 304)
      └ head SHA 가 처음 보이면 reviews 에 PENDING 생성
 
+POST /api/github/webhook (GITHUB_WEBHOOK_SECRET 이 있으면)
+  └ X-Hub-Signature-256 (HMAC-SHA256) 확인 → pull_request 이벤트를 폴링과 같은 방식으로 반영
+     ├ opened · reopened · synchronize … : head SHA 가 처음 보이면 PENDING 생성 → ReviewWorker 를 바로 깨움
+     └ closed : PR 을 닫힘으로
+  (폴링은 그대로 돌아 놓친 이벤트를 메운다)
+
 ReviewWorker (10초마다) — PENDING 하나를 집어서
   ├ 수집: PR 본문 · 커밋 메시지 · 변경 파일과 patch
   ├ AnalysisPipeline
@@ -114,6 +120,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | DELETE | `/api/projects/{id}` | 삭제 (PR·리뷰 기록 포함) |
 | GET | `/api/projects/{id}/pulls` | PR 목록 + 최근 리뷰 상태 |
 | POST | `/api/projects/{id}/poll` | 지금 폴링 |
+| POST | `/api/github/webhook` | GitHub 웹훅 (`pull_request`, `ping`). `X-Hub-Signature-256` 이 맞아야 받는다. 202 `{outcome, projectId, prNumber, reason}` |
 | POST | `/api/projects/{id}/pulls/{number}/reviews` | 현재 커밋 다시 리뷰 (run 증가) |
 | GET | `/api/projects/{id}/reviews?limit=20` | 리뷰 기록 (판정, 지적 수) |
 | GET | `/api/reviews/{id}` | 리뷰 + 지적 사항(층별 근거 `grounding` 포함) + 분석 재료 요약(`context`) |
@@ -134,7 +141,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | GET | `/api/test-runs/{id}/extra-files` | 러너 전용 (`X-Run-Token`). 증거 테스트: 200 파일 · 202 만드는 중 · 204 없음 |
 | POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
-오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502)
+오류 코드: `INVALID_REPO_URL`(400), `REPO_NOT_PUBLIC`(400), `REPO_NOT_FOUND`(404), `PROJECT_NOT_FOUND`(404), `PULL_NOT_FOUND`(404), `REVIEW_NOT_FOUND`(404), `GRAPH_NOT_FOUND`(404), `GRAPH_RUN_INVALID`(403), `INVALID_SETTINGS`(400), `PROJECT_EXISTS`(409), `GRAPH_NOT_RUNNING`(409), `PULL_CLOSED`(409), `GITHUB_ERROR`(502), `WEBHOOK_DISABLED`(404), `WEBHOOK_SIGNATURE_INVALID`(401), `WEBHOOK_INVALID`(400)
 
 ## 평가
 
@@ -163,6 +170,7 @@ node eval/score.mjs --api https://pr-guard-api-production.up.railway.app --proje
 | `OPENAI_API_KEY` | (없음) | 없으면 LLM 리뷰 없이 정적 분석만 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Responses API 모델 (리뷰 · 증거 테스트) |
 | `POLL_INTERVAL` | `PT5M` | 폴링 주기 (ISO-8601) |
+| `GITHUB_WEBHOOK_SECRET` | (없음) | 있으면 `POST /api/github/webhook` 을 받는다. 레포(또는 조직) Settings → Webhooks 에 Payload URL `{API}/api/github/webhook`, Content type `application/json`, 같은 Secret, 이벤트 "Pull requests" 로 등록 |
 | `REVIEW_WORKER_DELAY` | `PT10S` | 대기 중인 리뷰를 집는 간격 |
 | `REVIEW_MAX_PATCH_CHARS` | `60000` | 리뷰어에 넘기는 patch 총 길이 상한 (문자 수) |
 | `WEB_URL` | `https://pr-guard-web.vercel.app` | PR 코멘트의 "분석 과정 보기" 링크 대상 |

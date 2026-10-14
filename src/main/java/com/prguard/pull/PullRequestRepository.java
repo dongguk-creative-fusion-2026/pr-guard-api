@@ -80,6 +80,17 @@ public class PullRequestRepository {
                 .update();
     }
 
+    /** 웹훅으로 닫힘(merge 포함)을 받았을 때. 바뀐 행이 있으면 true. */
+    public boolean close(long projectId, int number) {
+        return jdbc.sql("""
+                        UPDATE pull_requests SET state = 'closed', updated_at = now()
+                         WHERE project_id = :projectId AND number = :number AND state = 'open'
+                        """)
+                .param("projectId", projectId)
+                .param("number", number)
+                .update() > 0;
+    }
+
     public void setCommentId(long id, long commentId) {
         jdbc.sql("UPDATE pull_requests SET comment_id = :commentId WHERE id = :id")
                 .param("id", id)

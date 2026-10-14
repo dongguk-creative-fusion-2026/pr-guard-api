@@ -31,6 +31,9 @@ prguard:
     model: ${OPENAI_MODEL:gpt-4o-mini}
   poll:
     interval: ${POLL_INTERVAL:PT5M}
+  webhook:
+    # GitHub 웹훅 secret. 있으면 POST /api/github/webhook 으로 PR 이벤트를 받아 바로 리뷰한다 (폴링은 그대로 돈다)
+    secret: ${GITHUB_WEBHOOK_SECRET:}
   review:
     worker-delay: ${REVIEW_WORKER_DELAY:PT10S}
     # 리뷰어에 넘기는 patch 총 길이 상한 (문자 수)

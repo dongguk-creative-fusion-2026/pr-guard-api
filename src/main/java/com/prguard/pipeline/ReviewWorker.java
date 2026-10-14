@@ -26,6 +26,9 @@ import com.prguard.review.ReviewRepository;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -51,6 +54,14 @@ public class ReviewWorker {
     private final ObjectMapper mapper;
     private final ReviewEventBus events;
     private final WebLinks links;
+    /** 한 번에 리뷰 하나: 주기 실행과 웹훅이 동시에 깨워도 drain 은 하나만 돈다 */
+    private final AtomicBoolean draining = new AtomicBoolean();
+    private final AtomicBoolean wakeRequested = new AtomicBoolean();
+    private final ExecutorService waker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "review-wake");
+        t.setDaemon(true);
+        return t;
+    });
 
     public ReviewWorker(ReviewRepository reviews, ProjectRepository projects, PullRequestRepository pulls,
                         FindingRepository findings, GitHubClient github, AnalysisPipeline pipeline,
@@ -72,10 +83,27 @@ public class ReviewWorker {
 
     @Scheduled(fixedDelayString = "${prguard.review.worker-delay}", initialDelayString = "PT10S")
     public void drain() {
-        Optional<Review> next;
-        while ((next = reviews.claimNext(props.staleAfter())).isPresent()) {
-            process(next.get());
-        }
+        do {
+            if (!draining.compareAndSet(false, true)) {
+                // 도는 중인 drain 이 끝나면서 wakeRequested 를 보고 한 번 더 돈다
+                return;
+            }
+            try {
+                wakeRequested.set(false);
+                Optional<Review> next;
+                while ((next = reviews.claimNext(props.staleAfter())).isPresent()) {
+                    process(next.get());
+                }
+            } finally {
+                draining.set(false);
+            }
+        } while (wakeRequested.get());
+    }
+
+    /** 다음 주기를 기다리지 않고 대기 중인 리뷰를 집는다 (웹훅). 호출한 스레드는 바로 돌아간다. */
+    public void wake() {
+        wakeRequested.set(true);
+        waker.execute(this::drain);
     }
 
     void process(Review review) {
