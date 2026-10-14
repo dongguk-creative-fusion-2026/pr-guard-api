@@ -57,12 +57,14 @@ public class TestRunService {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final ExecutionProperties props;
+    private final RunnerCacheProperties cache;
     private final TestRunRepository runs;
     private final ObjectMapper mapper;
     private volatile TestRunner runner;
 
-    public TestRunService(ExecutionProperties props, TestRunRepository runs, ObjectMapper mapper) {
+    public TestRunService(ExecutionProperties props, RunnerCacheProperties cache, TestRunRepository runs, ObjectMapper mapper) {
         this.props = props;
+        this.cache = cache;
         this.runs = runs;
         this.mapper = mapper;
     }
@@ -82,8 +84,8 @@ public class TestRunService {
             synchronized (this) {
                 if (runner == null) {
                     runner = switch (props.runner()) {
-                        case KUBERNETES -> new KubernetesTestRunner(props);
-                        case DOCKER -> new DockerTestRunner(props);
+                        case KUBERNETES -> new KubernetesTestRunner(props, cache);
+                        case DOCKER -> new DockerTestRunner(props, cache);
                         case NONE -> throw new IllegalStateException("실행 검증이 꺼져 있습니다");
                     };
                 }

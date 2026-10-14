@@ -6,6 +6,10 @@ import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.batch.v1.Job;
+import io.fabric8.kubernetes.api.model.Volume;
+import io.fabric8.kubernetes.api.model.VolumeBuilder;
+import io.fabric8.kubernetes.api.model.VolumeMount;
+import io.fabric8.kubernetes.api.model.VolumeMountBuilder;
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
@@ -20,6 +24,7 @@ import org.slf4j.LoggerFactory;
  *
  * Job 은 남의 코드를 돌리므로 최소 권한으로 만든다: root 아님, 권한 상승 · 리눅스 capability 없음,
  * 서비스 계정 토큰 없음, CPU · 메모리 · 시간 제한, 끝나면 자동 삭제, 실패해도 재시도 안 함.
+ * 의존성 캐시를 켜면 PVC 의 프로젝트 칸을 /cache 에 붙인다: base 는 읽기 · 쓰기, head(PR 코드)는 읽기 전용.
  */
 public class KubernetesTestRunner implements TestRunner {
 
@@ -30,20 +35,22 @@ public class KubernetesTestRunner implements TestRunner {
     private static final int TTL_AFTER_FINISHED_SECONDS = 600;
 
     private final ExecutionProperties props;
+    private final RunnerCacheProperties cache;
     private final KubernetesClient client;
 
-    public KubernetesTestRunner(ExecutionProperties props) {
-        this(props, new KubernetesClientBuilder().build());
+    public KubernetesTestRunner(ExecutionProperties props, RunnerCacheProperties cache) {
+        this(props, cache, new KubernetesClientBuilder().build());
     }
 
-    KubernetesTestRunner(ExecutionProperties props, KubernetesClient client) {
+    KubernetesTestRunner(ExecutionProperties props, RunnerCacheProperties cache, KubernetesClient client) {
         this.props = props;
+        this.cache = cache;
         this.client = client;
     }
 
     @Override
     public String start(TestRunJob job) {
-        Job manifest = jobFor(job, props);
+        Job manifest = jobFor(job, props, cache);
         client.batch().v1().jobs().inNamespace(props.namespace()).resource(manifest).create();
         log.info("실행 검증 Job 생성 {}/{} ({} {})", props.namespace(), manifest.getMetadata().getName(), job.side(),
                 job.sha().substring(0, 7));
@@ -103,18 +110,33 @@ public class KubernetesTestRunner implements TestRunner {
                 : new RunnerStatus(Phase.SCHEDULING, "노드 배정 기다리는 중");
     }
 
-    /** 러너 Job 매니페스트. 클러스터 없이 테스트할 수 있게 따로 뺀다. */
     static Job jobFor(TestRunJob job, ExecutionProperties props) {
+        return jobFor(job, props, RunnerCacheProperties.OFF);
+    }
+
+    /** 러너 Job 매니페스트. 클러스터 없이 테스트할 수 있게 따로 뺀다. */
+    static Job jobFor(TestRunJob job, ExecutionProperties props, RunnerCacheProperties cache) {
         String name = "prguard-run-" + job.runId() + "-" + job.side().toLowerCase();
         Map<String, Quantity> limits = Map.of("cpu", new Quantity(props.cpu()), "memory", new Quantity(props.memory()));
         Map<String, Quantity> requests = Map.of("cpu", new Quantity("250m"), "memory", new Quantity("512Mi"));
-        List<EnvVar> env = List.of(
+        List<EnvVar> env = new java.util.ArrayList<>(List.of(
                 new EnvVar("REPO_URL", job.repoUrl(), null),
                 new EnvVar("SHA", job.sha(), null),
                 new EnvVar("PR_NUMBER", String.valueOf(job.prNumber()), null),
                 new EnvVar("SIDE", job.side(), null),
                 new EnvVar("CALLBACK_URL", job.callbackUrl(), null),
-                new EnvVar("RUN_TOKEN", job.token(), null));
+                new EnvVar("RUN_TOKEN", job.token(), null)));
+        List<Volume> volumes = List.of();
+        List<VolumeMount> mounts = List.of();
+        if (cache.enabled()) {
+            // 프로젝트 칸만 붙인다. head(PR 코드)는 읽기 전용
+            volumes = List.of(new VolumeBuilder().withName("cache")
+                    .withNewPersistentVolumeClaim().withClaimName(cache.pvc()).endPersistentVolumeClaim().build());
+            mounts = List.of(new VolumeMountBuilder().withName("cache").withMountPath("/cache")
+                    .withSubPath(RunnerCacheProperties.key(job.repoUrl()))
+                    .withReadOnly(!RunnerCacheProperties.writable(job.side())).build());
+            env.add(new EnvVar("CACHE", "1", null));
+        }
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
@@ -142,11 +164,13 @@ public class KubernetesTestRunner implements TestRunner {
                                 .withFsGroup(USER_ID)
                                 .withNewSeccompProfile().withType("RuntimeDefault").endSeccompProfile()
                             .endSecurityContext()
+                            .withVolumes(volumes)
                             .addNewContainer()
                                 .withName("runner")
                                 .withImage(props.image())
                                 .withImagePullPolicy("IfNotPresent")
                                 .withEnv(env)
+                                .withVolumeMounts(mounts)
                                 .withNewResources().withLimits(limits).withRequests(requests).endResources()
                                 .withNewSecurityContext()
                                     .withAllowPrivilegeEscalation(false)

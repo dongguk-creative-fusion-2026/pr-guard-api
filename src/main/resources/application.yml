@@ -64,6 +64,11 @@ prguard:
     memory: ${EXEC_MEMORY:3Gi}
     timeout: ${EXEC_TIMEOUT:PT15M}
     poll-interval: PT2S
+    cache:
+      # 러너 의존성 캐시 (Gradle · Maven). base 는 읽기 · 쓰기, head(PR 코드)는 읽기 전용, 프로젝트마다 다른 칸
+      enabled: ${EXEC_CACHE:false}
+      # 쿠버네티스: 캐시 PVC (deploy/k8s/runner-cache.yaml). docker 러너는 이름 붙은 볼륨을 쓴다
+      pvc: ${EXEC_CACHE_PVC:prguard-runner-cache}
     mutation:
       # 변경분 변이 테스트: 바뀐 메서드에 작은 버그를 심어(PIT) 테스트가 잡는지 본다. head 실행에서만
       enabled: ${EXEC_MUTATION:true}

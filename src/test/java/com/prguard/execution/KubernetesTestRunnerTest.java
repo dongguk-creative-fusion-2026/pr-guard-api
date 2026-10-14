@@ -47,6 +47,40 @@ class KubernetesTestRunnerTest {
     }
 
     @Test
+    void jobFor_cache_baseWritesHeadOnlyReads_perProjectSlot() {
+        RunnerCacheProperties cache = new RunnerCacheProperties(true, "runner-cache");
+        Job base = KubernetesTestRunner.jobFor(
+                new TestRunJob(1, "BASE", "https://github.com/Owner/Repo.git", 7, "abc1234def", "c", "t"), PROPS, cache);
+        Job head = KubernetesTestRunner.jobFor(
+                new TestRunJob(2, "HEAD", "https://github.com/Owner/Repo.git", 7, "abc1234def", "c", "t"), PROPS, cache);
+
+        PodSpec b = base.getSpec().getTemplate().getSpec();
+        assertThat(b.getVolumes()).singleElement()
+                .satisfies(v -> assertThat(v.getPersistentVolumeClaim().getClaimName()).isEqualTo("runner-cache"));
+        assertThat(b.getContainers().get(0).getVolumeMounts()).singleElement().satisfies(m -> {
+            assertThat(m.getMountPath()).isEqualTo("/cache");
+            assertThat(m.getSubPath()).isEqualTo("owner-repo");
+            assertThat(m.getReadOnly()).isFalse();
+        });
+        assertThat(b.getContainers().get(0).getEnv()).anyMatch(e -> e.getName().equals("CACHE") && e.getValue().equals("1"));
+        // PR 코드가 도는 head 는 캐시를 바꿀 수 없다
+        assertThat(head.getSpec().getTemplate().getSpec().getContainers().get(0).getVolumeMounts())
+                .singleElement().satisfies(m -> assertThat(m.getReadOnly()).isTrue());
+
+        // 꺼져 있으면 아무것도 붙이지 않는다
+        Job off = KubernetesTestRunner.jobFor(new TestRunJob(3, "BASE", "u", 1, "abcdefg1", "c", "t"), PROPS);
+        assertThat(off.getSpec().getTemplate().getSpec().getVolumes()).isEmpty();
+        assertThat(off.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv()).noneMatch(e -> e.getName().equals("CACHE"));
+    }
+
+    @Test
+    void cacheKey_isPerRepoAndCannotEscape() {
+        assertThat(RunnerCacheProperties.key("https://github.com/Owner/Repo.git")).isEqualTo("owner-repo");
+        assertThat(RunnerCacheProperties.key("https://github.com/a/b")).isEqualTo("a-b");
+        assertThat(RunnerCacheProperties.key("https://github.com/x/../../etc")).doesNotContain("..").doesNotContain("/");
+    }
+
+    @Test
     void jobFor_withoutRuntimeClass_usesClusterDefault() {
         ExecutionProperties plain = new ExecutionProperties(PROPS.runner(), PROPS.image(), PROPS.callbackUrl(),
                 PROPS.namespace(), "", PROPS.cpu(), PROPS.memory(), PROPS.timeout(), PROPS.pollInterval());
