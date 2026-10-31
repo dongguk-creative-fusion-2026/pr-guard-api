@@ -172,6 +172,62 @@ public class GitHubClient {
                 .retrieve().body(GitHubWorkflowRun.class);
     }
 
+    public JsonNode invariantWorkflowRuns(RepoRef repo, String workflow, String ref) {
+        return http.get().uri("/repos/{o}/{r}/actions/workflows/{w}/runs?event=workflow_dispatch&branch={ref}&per_page=100",
+                repo.owner(), repo.name(), workflow, ref).retrieve().body(JsonNode.class);
+    }
+
+    public JsonNode workflowDetails(RepoRef repo, long runId) {
+        return http.get().uri("/repos/{o}/{r}/actions/runs/{id}", repo.owner(), repo.name(), runId)
+                .retrieve().body(JsonNode.class);
+    }
+
+    public void cancelInvariantWorkflow(RepoRef repo, long runId) {
+        http.post().uri("/repos/{o}/{r}/actions/runs/{id}/cancel", repo.owner(), repo.name(), runId)
+                .retrieve().toBodilessEntity();
+    }
+
+    public String mergeBase(RepoRef repo, String base, String head) {
+        JsonNode result = http.get().uri("/repos/{o}/{r}/compare/{base}...{head}", repo.owner(), repo.name(), base, head)
+                .retrieve().body(JsonNode.class);
+        return result == null ? "" : result.path("merge_base_commit").path("sha").asText();
+    }
+
+    public JsonNode workflowArtifacts(RepoRef repo, long runId) {
+        return http.get().uri("/repos/{o}/{r}/actions/runs/{id}/artifacts?per_page=100", repo.owner(), repo.name(), runId)
+                .retrieve().body(JsonNode.class);
+    }
+
+    /** Bounded download; authorization is not forwarded to the signed storage redirect. */
+    public byte[] invariantArtifact(RepoRef repo, long artifactId) {
+        var client = java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+                .connectTimeout(java.time.Duration.ofSeconds(10)).build();
+        var factory = new org.springframework.http.client.JdkClientHttpRequestFactory(client);
+        factory.setReadTimeout(java.time.Duration.ofSeconds(30));
+        var builder = RestClient.builder().requestFactory(factory).baseUrl(props.apiUrl());
+        if (props.hasToken()) builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + props.token());
+        return builder.build().get().uri("/repos/{o}/{r}/actions/artifacts/{id}/zip", repo.owner(), repo.name(), artifactId)
+                .exchange((request, response) -> {
+                    byte[] bytes;
+                    if (response.getStatusCode().value() == 302) {
+                        var location = response.getHeaders().getLocation();
+                        if (location == null || !"https".equals(location.getScheme()) || location.getHost() == null || location.getUserInfo() != null) {
+                            throw new IllegalStateException("Invalid artifact redirect");
+                        }
+                        bytes = RestClient.builder().requestFactory(factory).build().get().uri(location)
+                                .exchange((r, res) -> {
+                                    if (!res.getStatusCode().is2xxSuccessful()) throw new IllegalStateException("Artifact storage unavailable");
+                                    return res.getBody().readNBytes(1_000_001);
+                                });
+                    } else {
+                        if (!response.getStatusCode().is2xxSuccessful()) throw new GitHubException(response.getStatusCode().value(), "Artifact download failed");
+                        bytes = response.getBody().readNBytes(1_000_001);
+                    }
+                    if (bytes.length > 1_000_000) throw new IllegalStateException("Artifact too large");
+                    return bytes;
+                });
+    }
+
     /** 기본 브랜치의 파일 하나. 없으면 null */
     public RepoFile getFile(RepoRef repo, String path) {
         return getFile(repo, path, null);

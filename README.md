@@ -7,6 +7,47 @@ PR Guard 백엔드. AI 네이티브 개발 환경에서 **속도는 그대로 �
 - 프론트엔드: [pr-guard-web](https://github.com/dongguk-creative-fusion-2026/pr-guard-web)
 - 테스트·평가용 레포: [pr-guard-sandbox](https://github.com/dongguk-creative-fusion-2026/pr-guard-sandbox)
 
+## 데이터 정합성 불변식 검증 (Hypothesis)
+
+프로젝트 기본 규칙과 PR별 규칙 초안을 저장하고, 기존 OpenAI API로 자연어를 검토용 후보로 해석한다. 사용자가 확인한 지원 규칙만 GitHub Actions에서 수동 실행한다. API 서버는 실행 요청과 결과 수집을 담당하며 사용자 PC나 API 서버에 Hypothesis용 Python·컨테이너 엔진·Kubernetes를 설치하지 않는다.
+
+```text
+프로젝트 기본 규칙 → PR에서 불러오기·수정·저장
+  → 규칙 후보 생성(OpenAI, 키가 없으면 제한된 템플릿)
+  → 사용자가 조건 확인 후 실행
+  → head / merge-base SHA 고정 → GitHub Actions
+  → Hypothesis 입력 탐색·반례 축소 → 같은 입력을 base/head에 재생
+  → 작은 결과 artifact → API 수집·검증 → PostgreSQL 저장 → 화면 표시
+```
+
+현재 실행 어댑터는 `pr-guard-sandbox`의 **게시글 수정 전후 작성자 ID 보존** 규칙 하나다. 실제 Spring 서비스와 JPA를 H2 PostgreSQL 호환 모드에서 실행한다. 일반적인 모든 업무 규칙을 자동 실행하거나, 실제 PostgreSQL 고유 동작 및 HTTP 인증을 검증하는 기능은 아니다. 다른 조건과 규칙은 검토 후보로 표시한다. 결과는 기존 머지 판정에 반영하지 않는다.
+
+프런트에서는 프로젝트 **정합성 규칙**을 선택적으로 저장한 뒤 PR 상세의 **데이터 정합성 규칙**에서 초안을 입력·저장한다. **규칙 후보 생성**으로 해석 내용을 확인하고, 지원 후보의 **Hypothesis 테스트 실행**을 누르면 Actions 상태와 결과가 표시된다. 상세한 화면 순서는 [프런트 README](https://github.com/dongguk-creative-fusion-2026/pr-guard-web/blob/main/README.md#데이터-정합성-규칙과-hypothesis-실행)를 참고한다.
+
+### 배포와 활성화
+
+1. `.github/workflows/invariant-check.yml`과 `invariant-poc/`를 기본 브랜치에 반영한다.
+2. API를 배포해 Flyway 마이그레이션 V15~V18을 적용한다.
+3. 서버의 `GITHUB_TOKEN`에 워크플로 저장소의 **Actions 읽기/쓰기**, 대상 저장소의 코드·PR 읽기 권한을 설정한다.
+4. `INVARIANT_WORKFLOW_REPO=dongguk-creative-fusion-2026/pr-guard-api`, `INVARIANT_WORKFLOW_REF=main`을 확인하고 `INVARIANT_EXEC_ENABLED=true`로 켠다.
+5. 대응하는 웹 버전을 배포하고 PR에서 후보 생성·실행·결과 조회를 확인한다.
+
+기본값은 비활성이다. 기존 `EXEC_RUNNER=none`(일반 테스트 실행/Kubernetes 꺼짐)과 독립적으로 동작한다. 콜백 주소나 배포 서버 인증 토큰을 Actions에 넣을 필요가 없다. 표준 Ubuntu 러너에서 동시 실행 1개, 작업당 15분, 대기 포함 30분, artifact 보관 1일로 제한한다.
+
+### 코드 구성과 검증 상태
+
+| 구성 | 책임 |
+|---|---|
+| `InvariantInterpreter` / `InvariantRuleCompiler` | LLM 구조화 해석, 키 없는 경우 템플릿 해석, 지원 규칙 식별 |
+| `InvariantSettingsController` / `ProjectInvariantController` | PR 초안과 프로젝트 기본 규칙 저장·조회 |
+| `InvariantExecutionService` | 커밋 고정, Actions 요청, 상태 수집·타임아웃 |
+| `InvariantRunRepository` | 실행 기록·종료 결과 저장, DB 기반 동시 실행 제한 |
+| `InvariantResultReader` | ZIP을 디스크에 풀지 않고 크기·경로·커밋·관측값 검증 |
+| `invariant-poc/runner/` | Actions에서 실행하는 Python/Hypothesis 및 Java 어댑터 |
+
+Java 테스트, Python 테스트, 웹 빌드, actionlint와 컨테이너 없는 실제 회귀 테스트를 확인했다. 실제 유료 LLM의 해석 정확도, 새 워크플로의 GitHub 호스팅 실행 및 이번 Actions 전환의 DB 포함 종단 간 검증은 별도로 확인해야 한다. 이전 Docker PoC 검증 기록은 현재 배포 완료를 의미하지 않는다.
+
+전체 설정·API·재현 방법은 [불변식 검증 README](invariant-poc/README.md), 상세 근거와 한계는 [검증 결과](invariant-poc/검증-결과.md)를 참고한다.
 - 의존성 보안: [GuardDog 연동·실행·검사 범위](docs/guarddog.md) (기본 꺼짐, npm/PyPI 신규·변경 직접 의존성)
 
 ## 흐름
