@@ -8,7 +8,7 @@ RUN gradle shadowJar --no-daemon -q
 
 FROM eclipse-temurin:21-jdk-noble
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl ca-certificates \
+    && apt-get install -y --no-install-recommends git curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/* \
     && (userdel -r ubuntu 2>/dev/null || true) \
     && useradd --uid 1000 --create-home runner
@@ -25,6 +25,13 @@ RUN mkdir -p /opt/prguard/pit && cd /opt/prguard/pit \
                 org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar; do \
          curl -fsSLO "https://repo1.maven.org/maven2/$j"; \
        done
+# SonarCloud: 커버리지(JaCoCo 에이전트 · 보고서 CLI)와 스캐너. 스캐너는 이미지의 JDK 21 로 돈다
+RUN mkdir -p /opt/prguard/jacoco && cd /opt/prguard/jacoco \
+    && curl -fsSL -o jacocoagent.jar https://repo1.maven.org/maven2/org/jacoco/org.jacoco.agent/0.8.14/org.jacoco.agent-0.8.14-runtime.jar \
+    && curl -fsSL -o jacococli.jar https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.14/org.jacoco.cli-0.8.14-nodeps.jar \
+    && curl -fsSL -o /tmp/scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.1.0.6389.zip \
+    && unzip -q /tmp/scanner.zip -d /opt/prguard && mv /opt/prguard/sonar-scanner-8.1.0.6389 /opt/prguard/sonar-scanner \
+    && rm /tmp/scanner.zip
 # 의존성 캐시를 붙일 자리. docker 이름 붙은 볼륨은 처음 붙을 때 이 소유자를 물려받는다
 RUN mkdir -p /cache && chown 1000:1000 /cache
 COPY --chmod=755 run-tests.sh /usr/local/bin/run-tests

@@ -4,6 +4,7 @@ import com.prguard.analysis.AnalysisResult;
 import com.prguard.analysis.ChangedFile;
 import com.prguard.analysis.ContextSummary;
 import com.prguard.analysis.Finding;
+import com.prguard.analysis.GraphImpact;
 import com.prguard.analysis.Grounding;
 import com.prguard.analysis.GuardDogReport;
 import com.prguard.analysis.Severity;
@@ -86,6 +87,15 @@ public class SummaryRenderer {
                     .append(ctx.headIndex().methods()).append("개\n");
             sb.append("- 바뀐 메서드 ").append(ctx.changedMethods().size()).append("개 (호출부가 있는 것 ")
                     .append(withCallers).append("개)\n");
+        }
+        GraphImpact impact = ctx.graphImpact();
+        if (impact != null && !impact.changed().isEmpty()) {
+            sb.append("- 변경 영향 (GitNexus): 바뀐 함수 ").append(impact.changed().size()).append("개 → 부르는 함수 ")
+                    .append(impact.impacted().size()).append("개 (").append(impact.maxDepth()).append("단계까지)");
+            if (!impact.impactedFiles().isEmpty()) {
+                sb.append(", 이 PR 이 고치지 않은 파일 ").append(impact.impactedFiles().size()).append("개");
+            }
+            sb.append('\n');
         }
         if (ctx.historyCommits() > 0) {
             sb.append("- git 이력: 최근 커밋 ").append(ctx.historyCommits()).append("개 분석\n");

@@ -9,7 +9,8 @@ import org.springframework.stereotype.Repository;
 public class RepoGraphRepository {
 
     private static final String SELECT = """
-            SELECT project_id, status, commit_sha, graph::text AS graph, error, progress::text AS progress, run_url,
+            SELECT project_id, status, commit_sha, (graph - 'impact')::text AS graph, error, progress::text AS progress,
+                   run_url,
                    created_at, started_at, finished_at
               FROM repo_graphs
             """;
@@ -25,6 +26,32 @@ public class RepoGraphRepository {
                 .param("projectId", projectId)
                 .query(RepoGraph.class)
                 .optional();
+    }
+
+    /**
+     * 리뷰의 변경 영향 분석용 호출 그래프 ({@code graph.impact}). 화면에 보내는 {@link #find} 에서는 크기 때문에 뺀다.
+     * 예전 그래프(impact 가 없음)는 화면용 functions · calls 를 대신 돌려준다.
+     */
+    public Optional<ImpactSource> findImpact(long projectId) {
+        return jdbc.sql("""
+                        SELECT commit_sha,
+                               COALESCE(graph->'impact', jsonb_build_object('functions', graph->'functions',
+                                                                            'calls', graph->'calls'))::text AS json,
+                               jsonb_exists(graph, 'impact') AS full
+                          FROM repo_graphs
+                         WHERE project_id = :projectId AND graph IS NOT NULL
+                        """)
+                .param("projectId", projectId)
+                .query(ImpactSource.class)
+                .optional();
+    }
+
+    /**
+     * @param commitSha 그래프를 만든 기본 브랜치 커밋
+     * @param json      {@code graph.impact} JSON (full 이 false 면 화면용 functions · calls)
+     * @param full      레포 전체 호출 그래프인가 (false 면 화면용으로 잘린 그래프)
+     */
+    public record ImpactSource(String commitSha, String json, boolean full) {
     }
 
     /** 그래프를 (다시) 만들도록 대기열에 넣는다. 이미 대기 중이거나 만드는 중이면 그대로 둔다. */

@@ -125,7 +125,9 @@ public class FindingGrounder {
     private static boolean indexRule(Finding f) {
         String rule = f.ruleId();
         return Finding.TOOL.equals(f.source())
-                && (rule.startsWith("AST_") || rule.equals("UNRESOLVED_METHOD") || rule.equals("ARITY_MISMATCH"));
+                && (rule.startsWith("AST_") || rule.equals("UNRESOLVED_METHOD") || rule.equals("ARITY_MISMATCH")
+                        // 외부 정적 분석기: 같은 곳을 짚은 AI 지적을 확인해 준다
+                        || rule.equals("SEMGREP") || rule.equals("SONAR_ISSUE"));
     }
 
     private static boolean execRule(Finding f) {
@@ -136,6 +138,9 @@ public class FindingGrounder {
 
     private Layer index(Finding f, AnalysisContext ctx, Map<Finding, List<MethodInfo>> linked, List<Finding> all,
                         Sources sources) {
+        if (Finding.TOOL.equals(f.source()) && f.ruleId().equals("CROSS_PR_OVERLAP")) {
+            return layer(LayerId.INDEX, Mark.CONFIRMED, "PR Conflict Detector가 수정 영역 겹침 확인 (병합/실행 충돌 미검증)");
+        }
         if (indexRule(f)) {
             return layer(LayerId.INDEX, Mark.CONFIRMED, "정적 검사 " + f.ruleId() + " 가 찾음");
         }

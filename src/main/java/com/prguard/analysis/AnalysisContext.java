@@ -14,6 +14,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * 검사기가 쓰는 재료 전부. 단계가 실패하면 해당 재료는 비어 있고 {@link #notes()} 에 이유가 남는다.
@@ -32,8 +36,11 @@ public final class AnalysisContext {
     private List<BlameLine> blame = List.of();
     private Map<String, MethodAstDiff> astDiffs = Map.of();
     private GuardDogReport guarddog;
+    private GraphImpact graphImpact = GraphImpact.empty();
     // 검사기들이 동시에 남길 수 있다
     private final List<String> notes = Collections.synchronizedList(new ArrayList<>());
+    // 여러 검사기가 나눠 쓰는 결과 (Semgrep 한 번 실행 → 보안 · 코드 품질)
+    private final Map<String, CompletableFuture<Object>> shared = new ConcurrentHashMap<>();
 
     public AnalysisContext(PullInfo pull, List<ChangedFile> files) {
         this.pull = pull;
@@ -85,6 +92,11 @@ public final class AnalysisContext {
         return astDiffs;
     }
 
+    /** GitNexus 호출 그래프로 따라간 변경 영향. 그래프가 없으면 비어 있다 */
+    public GraphImpact graphImpact() {
+        return graphImpact;
+    }
+
     public List<String> notes() {
         return notes;
     }
@@ -92,6 +104,31 @@ public final class AnalysisContext {
     public GuardDogReport guarddog() { return guarddog; }
 
     void setGuarddog(GuardDogReport report) { this.guarddog = report; }
+
+    /**
+     * key 마다 한 번만 계산한다. 다른 검사기가 계산 중이면 끝날 때까지 기다렸다가 같은 결과를 받는다.
+     * 계산이 실패하면 기다리던 쪽도 같은 예외를 받는다.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T once(String key, Supplier<T> compute) {
+        CompletableFuture<Object> mine = new CompletableFuture<>();
+        CompletableFuture<Object> running = shared.putIfAbsent(key, mine);
+        if (running != null) {
+            try {
+                return (T) running.join();
+            } catch (CompletionException e) {
+                throw e.getCause() instanceof RuntimeException r ? r : e;
+            }
+        }
+        try {
+            T value = compute.get();
+            mine.complete(value);
+            return value;
+        } catch (RuntimeException e) {
+            mine.completeExceptionally(e);
+            throw e;
+        }
+    }
 
     /** patch 의 추가 라인을 감싸는 head 메서드들. A 에서 hunk 를 메서드에 연결할 때 쓴다. */
     public Set<MethodInfo> methodsTouchedBy(ChangedFile file) {
@@ -114,6 +151,10 @@ public final class AnalysisContext {
 
     void setAstDiffs(Map<String, MethodAstDiff> astDiffs) {
         this.astDiffs = Map.copyOf(astDiffs);
+    }
+
+    void setGraphImpact(GraphImpact graphImpact) {
+        this.graphImpact = graphImpact;
     }
 
     void setHistory(GitHistory history, List<BlameLine> blame) {
