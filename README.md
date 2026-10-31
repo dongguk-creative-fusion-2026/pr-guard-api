@@ -176,6 +176,51 @@ PR Guard 가 우리 조직(`SONAR_ORGANIZATION`) 아래에 레포마다 public �
 커버리지는 그 실행에서 돈 테스트 기준이다 (영향 테스트 선택이 켜져 있으면 고른 테스트만).
 토큰은 PR 코드(빌드 · 테스트)가 다 돈 뒤에 받지만 같은 컨테이너라 완전히 격리되지는 않는다. 분석 전용 조직과 토큰을 따로 쓰고, 토큰을 누가 먼저 가져가면 그 실행은 스캔하지 않는다.
 
+## 열린 PR 간 수정 영역 겹침 분석
+
+[PR Conflict Detector](https://github.com/github-community-projects/pr-conflict-detector)의 MIT 핵심 엔진을
+번들해 열린 PR의 동일 파일·수정 영역 겹침과 연결된 PR 묶음을 분석한다.
+Python 3.10+ 표준 라이브러리만 필요하며 Docker 이미지에는 Python 3를 포함한다.
+출처·고정 커밋·라이선스는 `src/main/resources/prconflict/UPSTREAM.md`와 `LICENSE`에 보존했다.
+
+- **리뷰 연동**: D(위험도) 검사기 `pr-conflict-detector`가 각 리뷰 때 열린 PR을 조회한다.
+  겹침은 `CROSS_PR_OVERLAP` MINOR로 저장되고 기존 리뷰 화면·요약 코멘트에 상대 PR 번호/링크를 표시한다.
+  이것만으로 머지를 막지 않는다. 표시된 근거는 코드 실행이 아니라 수정 영역의 겹침이다.
+- **API**: `GET /api/projects/{id}/pr-conflicts`는 최신 열린 PR을 다시 조회해
+  `status`, `checkedAt`, `heads`, `conflicts`, `clusters`, `notes`를 반환한다.
+  기존 `/api/**` 인증을 그대로 사용한다. `conflicts[].verified`는 항상 `false`다.
+- **좌표**: GitHub compare API로 실제 merge-base를 구한다. 대상 브랜치와 merge-base가 모두 같은
+  PR끼리만 비교한다. adapter는 diff 문맥을 제외한 조상 쪽 수정 줄/삽입 지점을 사용하며,
+  이름 변경은 기존 파일명으로 연결한다. 같은 작성자의 PR도 비교한다.
+- **범위/실패**: PR 상한, 파일 상한(기존 GitHub 클라이언트 최대 300개), 누락된 patch,
+  서로 다른 merge-base, 수집 중 바뀐 PR은 `PARTIAL`과 안내문으로 표시한다.
+  `COMPLETE`는 수집된 diff 범위를 비교했다는 의미이며 merge 가능/동작 안전을 보장하지 않는다.
+  전체 조회/엔진 실패는 API 503으로 반환하고 리뷰에서는 분석 정보에 실패 이유를 남긴다.
+  꺼진 기능은 `DISABLED`다.
+
+**이 기능은 텍스트/의미적 충돌의 확정 판정기가 아니다.** upstream의 `verify_conflict()`는 PR 두 개를
+함께 병합하지 않으므로 사용하지 않는다. 가상 병합, 함수 호출 관계를 통한 의미적 교차 영향,
+결합 빌드/테스트는 별도 기능이다. 삭제·추가·rename의 일부 경계 상황은 겹침 경고가 넓게 잡힐 수 있다.
+
+리뷰에 저장된 결과는 `checkedAt`/head SHA 기준 스냅샷이다. 다른 PR이 변경되어도 과거 리뷰를
+소급 수정하지 않는다. 최신 상태는 위 API 또는 리뷰 다시 실행으로 확인한다. 이 PR은 별도
+프론트엔드 충돌 전용 화면을 추가하지 않고 기존 지적 화면을 재사용한다.
+
+| 환경변수 | 기본값 | 설명 |
+|---|---|---|
+| `PR_CONFLICT_ENABLED` | `true` | 리뷰/API의 교차 PR 겹침 분석 활성화 |
+| `PR_CONFLICT_PYTHON` | `python3` | Python 3.10+ 실행 파일. Windows 로컬은 `python` 또는 절대 경로 |
+| `PR_CONFLICT_TIMEOUT` | `PT30S` | 번들 Python 엔진 실행 제한 시간 |
+| `PR_CONFLICT_MAX_PULLS` | `30` | 최신 수정 순 분석 PR 수 상한(최대 100, GitHub 목록 첫 페이지) |
+
+각 분석은 목록 조회 외에 PR마다 비교 기준·변경 파일·최신 head를 읽는 API 호출이 필요하다.
+API는 캐시하지 않으므로 polling 용도로 과도하게 호출하지 않는다.
+대상 레포의 Python·빌드 스크립트는 실행하지 않는다. 외부 알림 서비스로 전송하지 않으며
+엔진은 토큰을 상속하지 않는 별도 프로세스에서 실행한다.
+
+검증: `./gradlew test bootJar`. 테스트에는 실제 번들 Python 엔진 실행이 포함되며,
+`PR_CONFLICT_TEST_PYTHON`으로 테스트용 Python 실행 파일을 지정할 수 있다.
+
 ## 패키지
 
 | 패키지 | 역할 |
