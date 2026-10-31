@@ -12,6 +12,7 @@ package com.prguard.events;
  *               → EXEC_POD_HEAD → EXEC_TEST_HEAD ┴→ EXEC_DIFF → GROUND
  *   METHOD_DIFF → EXEC_EVIDENCE → EXEC_TEST_BASE · EXEC_TEST_HEAD (증거 테스트를 함께 돌린다)
  *   METHOD_DIFF → EXEC_SELECT → EXEC_TEST_BASE · EXEC_TEST_HEAD (영향 있는 테스트만 돌린다)
+ *   EXEC_TEST_HEAD → EXEC_SONAR → GROUND (head 러너가 테스트 뒤 SonarCloud 로 스캔)
  * </pre>
  */
 public enum Stage {
@@ -46,6 +47,8 @@ public enum Stage {
     EXEC_MUTATION,
     /** base 에서 통과하던 테스트가 head 에서 실패하는지 비교 */
     EXEC_DIFF,
+    /** head 러너가 테스트 뒤 SonarCloud 로 스캔 → 이슈 · 커버리지 · 중복률 · Quality Gate */
+    EXEC_SONAR,
     /** 지적마다 인덱스 · 이력 · 실행 · AI 층의 근거를 맞춰 보고, 인덱스와 어긋나는 AI 지적을 뺀다 */
     GROUND,
     VERDICT,

@@ -12,6 +12,8 @@
 # clone 뒤 {CALLBACK_URL}/extra-files 에서 PR Guard 가 만든 증거 · 관측 테스트를 받아 레포 테스트와 함께 돌린다.
 # 이어서 {CALLBACK_URL}/selection 에서 돌릴 테스트 클래스(영향 테스트 선택)를 받는다. 없으면 전체를 돌린다.
 # head 는 테스트 뒤 {CALLBACK_URL}/mutation 의 계획대로 PIT 변이 테스트를 돌리고 mutations.xml 을 함께 보낸다.
+# head 는 {CALLBACK_URL}/sonar 에 설정이 있으면 JaCoCo 로 커버리지를 모으고, 테스트 뒤 sonar-scanner 로 SonarCloud 에
+# PR 분석을 올린다 (토큰은 그때 {CALLBACK_URL}/sonar/token 에서 한 번만 받는다). 처리 작업 id 를 보고서에 싣는다.
 # 지원: Gradle wrapper(gradlew), Maven wrapper(mvnw)
 set -uo pipefail
 : "${REPO_URL:?}" "${SHA:?}" "${CALLBACK_URL:?}" "${RUN_TOKEN:?}"
@@ -76,6 +78,8 @@ report() {
   local args=(-F "exitCode=$code")
   [ -n "$error" ] && args+=(-F "error=$error")
   [ -n "${EVIDENCE_DROPPED:-}" ] && args+=(-F "evidenceDropped=$EVIDENCE_DROPPED")
+  [ -n "${SONAR_TASK:-}" ] && args+=(-F "sonarTask=$SONAR_TASK")
+  [ -n "${SONAR_ERROR:-}" ] && args+=(-F "sonarError=$SONAR_ERROR")
   [ -f "$LOG" ] && tail -c 20000 "$LOG" > "$WORK/log-tail.txt" && args+=(-F "log=@$WORK/log-tail.txt;type=text/plain")
   # 실패한 테스트를 다시 돌렸으면 첫 결과는 first/ 에 있다
   local results="$WORK/src"
@@ -202,6 +206,22 @@ else
   echo "영향 테스트 선택 없음: 전체 테스트 실행" >>"$LOG"
 fi
 
+# SonarCloud 분석 설정 (head 만). 204 = 하지 않음, 200 = "키 TAB 값" 줄들. 토큰은 PR 코드가 다 돈 뒤에 따로 받는다
+SONAR_PROPS=()
+SONAR_HOME="${SONAR_HOME:-/opt/prguard/sonar-scanner}"
+JACOCO_DIR="${JACOCO_DIR:-/opt/prguard/jacoco}"
+status=$(curl --silent --max-time 10 -o "$WORK/sonar.txt" -w '%{http_code}' -H "X-Run-Token: $RUN_TOKEN" \
+  "$CALLBACK_URL/sonar" || echo 000)
+if [ "$status" = 200 ]; then
+  while IFS=$'\t' read -r key value || [ -n "$key" ]; do
+    case "$key" in
+      host) SONAR_PROPS+=("-Dsonar.host.url=$value") ;;
+      organization|projectKey|pullrequest.key|pullrequest.branch|pullrequest.base) SONAR_PROPS+=("-Dsonar.$key=$value") ;;
+    esac
+  done < "$WORK/sonar.txt"
+  echo "SonarCloud 분석 예정: ${SONAR_PROPS[*]}" >>"$LOG"
+fi
+
 # 호출 기록: JAVA_TOOL_OPTIONS 는 빌드 도구가 띄우는 테스트 JVM 까지 물려받는다
 if [ "${TRACE_PACKAGES:-}" = off ]; then
   TRACE_PACKAGES=
@@ -219,6 +239,14 @@ if [ -n "${TRACE_PACKAGES:-}" ] && [ -f /opt/prguard/trace-agent.jar ]; then
   mkdir -p "$TRACE_DIR"
   export JAVA_TOOL_OPTIONS="-javaagent:/opt/prguard/trace-agent.jar ${JAVA_TOOL_OPTIONS:-}"
   echo "호출 기록 패키지: $TRACE_PACKAGES" >>"$LOG"
+fi
+
+# 커버리지 (SonarCloud 에 올린다). JaCoCo 에이전트도 테스트 JVM 이 물려받는다. 호출 기록과 같은 패키지만 계측한다
+if [ "${#SONAR_PROPS[@]}" -gt 0 ] && [ -f "$JACOCO_DIR/jacocoagent.jar" ]; then
+  includes='*'
+  [ -n "${TRACE_PACKAGES:-}" ] && includes=$(printf '%s' "$TRACE_PACKAGES" | sed 's/,/.*:/g; s/$/.*/')
+  mkdir -p "$WORK/jacoco"
+  export JAVA_TOOL_OPTIONS="-javaagent:$JACOCO_DIR/jacocoagent.jar=destfile=$WORK/jacoco/jacoco.exec,append=true,includes=$includes ${JAVA_TOOL_OPTIONS:-}"
 fi
 
 # 관측 테스트(동작 diff)가 결과를 쓰는 곳. 테스트 JVM 이 물려받는다
@@ -370,6 +398,59 @@ rerun_failed() {
   find . "${RESULT_FIND[@]}" -exec cp --parents {} "$WORK/rerun/" \;
 }
 
+# SonarCloud 스캔 (head 만, 테스트 뒤). 결과는 SONAR_TASK(처리 작업 id) 또는 SONAR_ERROR(하지 못한 이유)
+sonar_scan() {
+  [ "${#SONAR_PROPS[@]}" -gt 0 ] || return 0
+  if [ ! -x "$SONAR_HOME/bin/sonar-scanner" ]; then
+    SONAR_ERROR="러너 이미지에 sonar-scanner 가 없음"
+    return 0
+  fi
+  local srcs=() tests=() bins=() extra=() d
+  # 모듈마다 소스 · 테스트 · 컴파일 결과 디렉터리 (sonar 는 쉼표로 이은 상대 경로를 받는다)
+  while IFS= read -r d; do srcs+=("$d"); done < <(find . -type d -path '*/src/main/java' -not -path './.git/*' \
+    -not -path '*/build/*' -not -path '*/target/*' 2>/dev/null | sed 's#^\./##' | sort)
+  while IFS= read -r d; do tests+=("$d"); done < <(find . -type d -path '*/src/test/java' -not -path './.git/*' \
+    -not -path '*/build/*' -not -path '*/target/*' 2>/dev/null | sed 's#^\./##' | sort)
+  while IFS= read -r d; do bins+=("$d"); done < <(find . -type d \( -path '*/build/classes/java/main' -o -path '*/target/classes' \) \
+    -not -path './.git/*' 2>/dev/null | sed 's#^\./##' | sort)
+  if [ "${#srcs[@]}" -eq 0 ] || [ "${#bins[@]}" -eq 0 ]; then
+    SONAR_ERROR="Java 소스나 컴파일 결과가 없어 스캔하지 않음"
+    return 0
+  fi
+  if [ -s "$WORK/jacoco/jacoco.exec" ] && [ -f "$JACOCO_DIR/jacococli.jar" ]; then
+    local args=()
+    for d in "${bins[@]}"; do args+=(--classfiles "$d"); done
+    for d in "${srcs[@]}"; do args+=(--sourcefiles "$d"); done
+    if env -u JAVA_TOOL_OPTIONS java -jar "$JACOCO_DIR/jacococli.jar" report "$WORK/jacoco/jacoco.exec" "${args[@]}" \
+        --xml "$WORK/jacoco/jacoco.xml" >>"$LOG" 2>&1; then
+      extra+=("-Dsonar.coverage.jacoco.xmlReportPaths=$WORK/jacoco/jacoco.xml")
+    fi
+  fi
+  [ "${#tests[@]}" -gt 0 ] && extra+=("-Dsonar.tests=$(IFS=,; echo "${tests[*]}")")
+  # 토큰은 PR 코드(빌드 · 테스트)가 다 돈 지금 한 번만 받는다. 이미 누가 가져갔으면 비어 있다
+  local token
+  token=$(curl --silent --fail --max-time 10 -H "X-Run-Token: $RUN_TOKEN" "$CALLBACK_URL/sonar/token" || true)
+  if [ -z "$token" ]; then
+    SONAR_ERROR="SonarCloud 토큰을 받지 못함 (이미 사용됨)"
+    return 0
+  fi
+  progress sonar "SonarCloud 스캔 중"
+  rm -rf .scannerwork
+  SONAR_TOKEN="$token" SONAR_SCANNER_OPTS="-Xmx1g" env -u JAVA_TOOL_OPTIONS timeout 600 "$SONAR_HOME/bin/sonar-scanner" \
+    "${SONAR_PROPS[@]}" \
+    "-Dsonar.sources=$(IFS=,; echo "${srcs[*]}")" \
+    "-Dsonar.java.binaries=$(IFS=,; echo "${bins[*]}")" \
+    -Dsonar.sourceEncoding=UTF-8 -Dsonar.scanner.skipJreProvisioning=true \
+    "${extra[@]}" >>"$LOG" 2>&1
+  local code=$?
+  if [ "$code" -ne 0 ]; then
+    SONAR_ERROR="sonar-scanner 실패 (종료 코드 $code, 빌드 로그 참고)"
+    return 0
+  fi
+  SONAR_TASK=$(sed -n 's/^ceTaskId=//p' .scannerwork/report-task.txt 2>/dev/null | head -1)
+  [ -n "$SONAR_TASK" ] || SONAR_ERROR="스캔 결과에 처리 작업 id 가 없음"
+}
+
 if [ ! -f ./gradlew ] && [ ! -f ./mvnw ]; then
   report 127 "빌드 도구를 찾지 못함 (gradlew · mvnw 없음)"
   exit 0
@@ -390,6 +471,9 @@ fi
 if has_reports; then
   rerun_failed
   mutate
+  sonar_scan
+elif [ "${#SONAR_PROPS[@]}" -gt 0 ]; then
+  SONAR_ERROR="빌드 · 테스트가 돌지 않아 스캔하지 않음"
 fi
 
 progress reporting "결과 보내는 중"
