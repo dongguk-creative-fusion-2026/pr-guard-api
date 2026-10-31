@@ -25,6 +25,9 @@ import com.prguard.events.Stage;
 import com.prguard.execution.TestRunService;
 import com.prguard.review.Reviewer;
 import com.prguard.review.StatsOnlyReviewer;
+import com.prguard.rulemap.Rule;
+import com.prguard.rulemap.RuleMap;
+import com.prguard.rulemap.RuleMapService;
 import com.prguard.workspace.Checkout;
 import com.prguard.workspace.RepoWorkspace;
 import java.nio.file.Path;
@@ -51,6 +54,7 @@ import org.springframework.stereotype.Component;
  *   <li>base(merge-base)·head 소스 꺼내기</li>
  *   <li>양쪽 레포 인덱스 → 바뀐 메서드</li>
  *   <li>git 이력 통계 · 바뀐 라인의 blame</li>
+ *   <li>규칙 지도: base 와 최신 기본 브랜치 커밋의 규칙 (저장해 둔 것을 다시 쓴다)</li>
  *   <li>결정적 검사기 실행 (base 에도 있던 문제는 제외)</li>
  *   <li>LLM 리뷰 (구조 정보를 함께 넘김)</li>
  *   <li>기존 코드 충돌: 바뀐 메서드가 기대던 기존 코드를 모아 LLM 에 따로 묻는다 ({@link ContractContext})</li>
@@ -80,13 +84,14 @@ public class AnalysisPipeline {
     private final TestSelectionService selector;
     private final ConflictReviewer conflictReviewer;
     private final ConflictProperties conflictProps;
+    private final RuleMapService ruleMaps;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
                             TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder,
                             TestSelectionService selector, ConflictReviewer conflictReviewer,
-                            ConflictProperties conflictProps) {
+                            ConflictProperties conflictProps, RuleMapService ruleMaps) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -101,6 +106,7 @@ public class AnalysisPipeline {
         this.selector = selector;
         this.conflictReviewer = conflictReviewer;
         this.conflictProps = conflictProps;
+        this.ruleMaps = ruleMaps;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
@@ -163,8 +169,10 @@ public class AnalysisPipeline {
                             });
                 }
                 history(ctx, checkout, sink);
+                ruleMaps(ctx, checkout, sink);
             } else {
-                for (Stage stage : List.of(Stage.INDEX_BASE, Stage.INDEX_HEAD, Stage.METHOD_DIFF, Stage.HISTORY)) {
+                for (Stage stage : List.of(Stage.INDEX_BASE, Stage.INDEX_HEAD, Stage.METHOD_DIFF, Stage.HISTORY,
+                        Stage.RULE_MAP)) {
                     sink.skipped(stage, "소스가 없어 건너뜀");
                 }
             }
@@ -517,6 +525,46 @@ public class AnalysisPipeline {
             log.warn("이력 수집 실패: {}", e.toString());
             ctx.note("git 이력 수집 실패: " + e.getMessage());
             sink.failed(Stage.HISTORY, e.getMessage());
+        }
+    }
+
+    /** 규칙 지도. 실패해도 지도 없이 계속한다 (지도를 쓰는 검사는 건너뛴다). */
+    private void ruleMaps(AnalysisContext ctx, Checkout checkout, EventSink sink) {
+        if (!ctx.indexed()) {
+            sink.skipped(Stage.RULE_MAP, "레포 인덱스 없음");
+            return;
+        }
+        long t = System.currentTimeMillis();
+        sink.running(Stage.RULE_MAP, "규칙 지도");
+        try {
+            RuleMapService.Maps maps = ruleMaps.load(ctx.pull().repo(), checkout, ctx.pull().baseRef(), ctx.baseIndex());
+            ctx.setRuleMaps(maps.base(), maps.latest());
+            RuleMap base = maps.base();
+            RuleMap latest = maps.latest();
+            Set<String> baseIds = base.ids();
+            List<Rule> added = latest == null ? List.of()
+                    : latest.rules().stream().filter(r -> !baseIds.contains(r.id())).toList();
+            List<Rule> removed = latest == null ? List.of()
+                    : base.rules().stream().filter(r -> !latest.ids().contains(r.id())).toList();
+            sink.done(Stage.RULE_MAP, "규칙 " + base.rules().size() + "개"
+                    + (latest == null ? "" : " · PR 뒤 기본 브랜치 변경 " + (added.size() + removed.size()) + "개"), data(
+                    "baseSha", base.commitSha(),
+                    "baseCached", base.cached(),
+                    "rules", base.rules().size(),
+                    "byKind", base.rules().stream().collect(java.util.stream.Collectors.groupingBy(
+                            r -> r.kind().name(), LinkedHashMap::new, java.util.stream.Collectors.counting())),
+                    "conventions", base.conventions().stream()
+                            .map(r -> data("statement", r.statement(), "support", r.support(), "total", r.total()))
+                            .toList(),
+                    "latestSha", maps.latestSha(),
+                    "latestCached", latest != null && latest.cached(),
+                    "added", added.stream().limit(10).map(Rule::statement).toList(),
+                    "removed", removed.stream().limit(10).map(Rule::statement).toList(),
+                    "ms", System.currentTimeMillis() - t));
+        } catch (RuntimeException e) {
+            log.warn("규칙 지도 실패: {}", e.toString());
+            ctx.note("규칙 지도 실패: " + e.getMessage());
+            sink.failed(Stage.RULE_MAP, e.getMessage());
         }
     }
 

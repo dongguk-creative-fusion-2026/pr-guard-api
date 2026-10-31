@@ -35,6 +35,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   ├ RepoWorkspace   레포 clone → base(merge-base) / head worktree
   │   ├ JavaIndexer     양쪽 소스 인덱스 (타입 · 메서드 · 어노테이션 · 호출 관계) → 바뀐 메서드
   │   ├ GitHistoryLoader 최근 커밋 이력 · 동시 변경 통계 · 바뀐 라인의 blame
+  │   ├ RuleMapService  규칙 지도: base 와 지금 기본 브랜치 커밋의 코드가 지키는 규칙 (커밋마다 한 번 만들어 저장, 아래 "규칙 지도")
   │   ├ Analyzer 들     결정적 검사, 분류(A~D)별로 나란히 실행 (아래 "결정적 검사")
   │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달). 위 검사와 동시에 돈다
   │   │                 지적마다 kind(MISSING_SYMBOL · MISSING_CHECK · SECURITY …)와 근거 이름을 받고,
@@ -105,6 +106,23 @@ AI 는 요청받은 곳만 보고 고치다가, 기존 코드가 지키던 규�
 
 설정: `prguard.conflict.enabled`(`CONFLICT_ENABLED`) · `max-methods` · `max-chars`. `OPENAI_API_KEY` 가 없으면 건너뛴다.
 
+## 규칙 지도
+
+커밋 하나의 코드가 지키는 규칙 목록. LLM 없이 인덱스와 소스에서 뽑고(`RuleExtractor`), 커밋마다 한 번 만들어 `rule_maps` 에 저장해 다시 쓴다 (`RuleMapService`, 단계 `RULE_MAP`).
+
+- **사실**: 메서드가 던지는 예외(`@ResponseStatus` 면 HTTP 상태까지) · null 반환 · 부르는 검사(이름이 Guard · Policy · Validator 인 타입, require · check … 로 시작하는 메서드) · 권한 어노테이션 · 정렬 쿼리(`OrderBy` · `order by`) · 원자적 갱신(`SET x = x + 1`), 엔티티 필드 제약(NOT NULL · 길이 · null 가능)
+- **관례**: 같은 종류의 코드 2곳 이상, 75% 이상이 따르는 사실. 서비스 수정·삭제는 검사를 부른다 · 서비스 조회는 null 대신 예외 · 쓰기 API 는 권한 어노테이션 · 응답 DTO 는 email · password 같은 민감 필드를 담지 않는다
+
+예 (sandbox main): `PostService#getPost(Long): 찾는 값이 없으면 NotFoundException 예외를 던진다 → HTTP 404`, `User.bio: null 일 수 있다, 최대 300자`, `서비스의 수정·삭제 메서드는 검사를 부른다 (예: OwnershipGuard#requireOwner) (관례 4/5)`
+
+리뷰할 때 PR 의 base(merge-base) 지도와, base 브랜치 끝 커밋이 다르면 그 지도도 꺼내거나 만든다. 쓰는 곳:
+
+1. **기존 코드 충돌**: 바뀐 메서드 · 부르던 메서드 · 쓰는 필드의 규칙과 해당 관례를 `[C…]` 조각으로 넣는다. 규칙이 있는 "안 부르게 된 메서드"는 본문 대신 규칙 한 줄만
+2. **`stale-base-rule`**: PR 이 부르는 메서드의 규칙이 PR 을 만든 뒤 기본 브랜치에서 바뀌었으면 알린다 (아래 표). git 은 다른 파일이라 충돌로 보지 않는 의미 충돌
+3. **`convention`**: 새로 만든 코드가 관례를 어기면 알린다 (아래 표). 새 메서드는 PR 전 본문이 없어 기존 코드 충돌로는 볼 수 없다
+
+뽑는 방식이 바뀌면 `RuleExtractor.VERSION` 을 올린다 (저장된 지도는 같은 버전만 다시 쓴다). 코드에 흔적이 없는 규칙(기획 규칙 등)과 Java 밖 규칙은 뽑지 못한다.
+
 ## 테스트 신뢰도
 
 "테스트가 통과했다"가 아니라 "테스트가 버그를 실제로 잡느냐"를 본다.
@@ -131,6 +149,8 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | C · 보안 | `auth-removal` | `AST_AUTH_REMOVED` 메서드의 권한 어노테이션(@PreAuthorize · @Secured …)이 사라짐 | BLOCKER |
 | C · 보안 | `hardcoded-secret` | `HARDCODED_SECRET` 이번 PR 이 추가한 줄의 비밀값. 알려진 키 형식(AWS · GitHub · OpenAI · Slack · Google · 개인키)은 BLOCKER, 이름이 SECRET · TOKEN · PASSWORD · API_KEY … 인 상수 · 설정에 값을 직접 넣으면 MAJOR. `${...}` 주입 · 헤더 이름 · 테스트 코드 제외, 증거에는 값 앞 4자만 | BLOCKER / MAJOR |
 | D · 위험도 | `architecture-delta` | base · head 인덱스의 파일 간 의존을 비교해 이번 PR 이 만든 의존만 본다. `ARCH_LAYER_BYPASS` 웹이 서비스를 건너뛰고 저장소를 바로 부름(프로젝트가 평소 서비스를 거칠 때만), `ARCH_REVERSE_DEPENDENCY` 아래 계층이 위 계층을 부름, `ARCH_NEW_MODULE_DEPENDENCY` 의존하지 않던 두 모듈 사이 새 의존. 증거는 "출발 파일 → 도착 파일" | MAJOR |
+| B · 영향 | `stale-base-rule` | `STALE_BASE_RULE` PR 이 부르는 메서드(PR 이 바꾸지 않은 것)의 규칙이 PR 을 만든 뒤 기본 브랜치에서 바뀜 (규칙 지도 두 장 비교). 예외 · 검사 · 권한 · 정렬 · 원자적 갱신이 사라지거나 null 반환이 생기면 MAJOR | MAJOR / MINOR |
+| C · 보안 | `convention` | 새 코드가 레포 관례(규칙 지도)를 어김: `CONVENTION_GUARD_MISSING` 새 수정·삭제 서비스 메서드에 검사 없음, `CONVENTION_AUTH_MISSING` 새 쓰기 API 에 권한 어노테이션 없음, `CONVENTION_SENSITIVE_FIELD` 응답 DTO 에 민감 필드를 넣음, `CONVENTION_SENSITIVE_RESPONSE` 새 API 가 민감 필드 있는 타입(엔티티)을 그대로 돌려줌 → MAJOR. `CONVENTION_LOOKUP_NULL` 새 조회 메서드가 null 반환 → MINOR (B) | MAJOR / MINOR |
 | D · 위험도 | `test-trust` | 테스트 신뢰도(정적): 이번 PR 이 바꾼 테스트만 본다. `TEST_REMOVED` 검증하던 테스트를 지웠는데 그 테스트가 부르던 코드는 남음(실패 경로 검증이면 강조), `TEST_WEAKENED` 실패 경로 검증(assertThrows · never() …)이 줄어듦, `TEST_DISABLED` @Disabled · @Ignore 추가 → MAJOR. `TEST_NO_ASSERTION` 검증 없는 테스트, `TEST_TRIVIAL_ASSERTION` 항상 참인 검증뿐, `TEST_SWALLOWED_EXCEPTION` 예외를 삼키는 빈 catch, 검증 수 감소, 코드와 함께 지운 테스트 → MINOR. 같은 클래스의 검증 보조 메서드 호출 · JUnit 4 `@Test(expected)` 도 검증으로 센다 | MAJOR / MINOR |
 
 실행 검증이 켜져 있으면 `EXEC_*` 지적(회귀 · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화 · 테스트가 안 지나간 변경)이 더해진다.
@@ -150,6 +170,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | `graph` | 레포 전체 파일 의존성 그래프: 대기열 처리·워크플로 실행(`GraphWorker`), 결과 받기(`GraphController`), 로컬 실행(`GraphBuilder`) |
 | `index` | Java 레포 인덱스 (`JavaIndexer`, `RepoIndex`), base↔head 메서드 비교 (`MethodDiff`) |
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
+| `rulemap` | 규칙 지도: 규칙 추출(`RuleExtractor`), 커밋별 저장(`RuleMapRepository`), base · 최신 기본 브랜치 지도 꺼내기(`RuleMapService`) |
 | `diff` | GitHub patch 해석 (hunk, 추가·삭제 라인, 라인 코멘트 가능 라인) |
 | `analysis` | 지적 사항 모델(`Finding`), 검사기(`Analyzer`, `SnapshotAnalyzer`), 파이프라인, 근거 확인(`FindingGrounder`, `Grounding`), 판정 |
 | `analysis.rules` | 결정적 검사 규칙 (위 "결정적 검사" 표) |

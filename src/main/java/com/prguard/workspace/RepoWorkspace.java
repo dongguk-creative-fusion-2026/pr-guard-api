@@ -94,6 +94,27 @@ public class RepoWorkspace {
         }
     }
 
+    /** PR 을 꺼낼 때 받아 둔 base 브랜치 끝 커밋 (지금의 기본 브랜치). */
+    public String branchTip(Checkout checkout, String baseRef) {
+        return git.run(checkout.mirror(), "rev-parse", "refs/remotes/origin/" + baseRef + "^{commit}").strip();
+    }
+
+    /**
+     * PR 을 꺼낸 clone 에서 다른 커밋 하나를 더 꺼낸다 (규칙 지도용). 다 쓰면 {@link #release(Snapshot)} 를 불러야 한다.
+     */
+    public Snapshot checkoutCommit(RepoRef repo, Checkout checkout, String sha) {
+        ReentrantLock lock = locks.computeIfAbsent(key(repo), k -> new ReentrantLock());
+        lock.lock();
+        try {
+            String name = Integer.toHexString(key(repo).hashCode()) + "-rules-" + sha.substring(0, 8);
+            return new Snapshot(checkout.mirror(), worktree(checkout.mirror(), name, sha), sha);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public void release(Checkout checkout) {
         removeWorktrees(checkout.mirror(), checkout.baseDir(), checkout.headDir());
     }

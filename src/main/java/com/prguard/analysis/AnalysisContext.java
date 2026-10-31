@@ -6,6 +6,7 @@ import com.prguard.history.GitHistory;
 import com.prguard.index.ChangedMethod;
 import com.prguard.index.MethodInfo;
 import com.prguard.index.RepoIndex;
+import com.prguard.rulemap.RuleMap;
 import com.prguard.workspace.Checkout;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -18,7 +19,8 @@ import java.util.Set;
 /**
  * 검사기가 쓰는 재료 전부. 단계가 실패하면 해당 재료는 비어 있고 {@link #notes()} 에 이유가 남는다.
  *
- * <p>재료: PR 텍스트(의도) · 바뀐 파일과 patch · base/head 소스 인덱스 · 바뀐 메서드 · git 이력 · blame
+ * <p>재료: PR 텍스트(의도) · 바뀐 파일과 patch · base/head 소스 인덱스 · 바뀐 메서드 · git 이력 · blame ·
+ * 규칙 지도(base 와 최신 기본 브랜치)
  */
 public final class AnalysisContext {
 
@@ -31,6 +33,8 @@ public final class AnalysisContext {
     private GitHistory history = GitHistory.empty();
     private List<BlameLine> blame = List.of();
     private Map<String, MethodAstDiff> astDiffs = Map.of();
+    private RuleMap baseRules = RuleMap.EMPTY;
+    private RuleMap latestRules;
     // 검사기들이 동시에 남길 수 있다
     private final List<String> notes = Collections.synchronizedList(new ArrayList<>());
 
@@ -84,6 +88,16 @@ public final class AnalysisContext {
         return astDiffs;
     }
 
+    /** PR 이 출발한 커밋(base)의 규칙 지도. 없으면 빈 지도 */
+    public RuleMap baseRules() {
+        return baseRules;
+    }
+
+    /** 지금 기본 브랜치 끝 커밋의 규칙 지도. base 와 같은 커밋이거나 못 만들었으면 비어 있다 */
+    public Optional<RuleMap> latestRules() {
+        return Optional.ofNullable(latestRules);
+    }
+
     public List<String> notes() {
         return notes;
     }
@@ -109,6 +123,11 @@ public final class AnalysisContext {
 
     void setAstDiffs(Map<String, MethodAstDiff> astDiffs) {
         this.astDiffs = Map.copyOf(astDiffs);
+    }
+
+    void setRuleMaps(RuleMap base, RuleMap latest) {
+        this.baseRules = base == null ? RuleMap.EMPTY : base;
+        this.latestRules = latest;
     }
 
     void setHistory(GitHistory history, List<BlameLine> blame) {

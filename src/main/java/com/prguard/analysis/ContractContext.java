@@ -5,6 +5,9 @@ import com.prguard.index.ChangedMethod;
 import com.prguard.index.MethodInfo;
 import com.prguard.index.RepoIndex;
 import com.prguard.index.TypeInfo;
+import com.prguard.rulemap.Rule;
+import com.prguard.rulemap.RuleExtractor;
+import com.prguard.rulemap.RuleMap;
 import com.prguard.workspace.Checkout;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +30,9 @@ import java.util.regex.Pattern;
  * <p>본문 · 시그니처가 바뀐 메서드마다 모은다: base 본문, base 에서 부르다 head 에서 안 부르는 메서드, head 에서 새로 부르는 메서드,
  * base 경로에서는 던지던 예외 타입, 이 메서드를 부르는 곳, 이 메서드를 지나가는 테스트. 모두 인덱스로 찾고 LLM 은 쓰지 않는다.
  *
+ * <p>규칙 지도가 있으면 관련 규칙(그 메서드 · 부르던 메서드 · 쓰는 필드의 규칙, 해당하는 관례)을 한 줄씩 넣고,
+ * 규칙이 있는 "안 부르게 된 메서드"는 본문 대신 규칙만 넣는다 (같은 정보를 짧게).
+ *
  * <p>조각마다 id(C1, C2 …)를 붙여 LLM 이 근거로 인용하게 하고, 인용한 id 가 이 묶음에 있는지로 근거를 확인한다
  * (없는 id 를 든 지적은 근거를 지어낸 것으로 본다).
  */
@@ -39,6 +45,9 @@ public final class ContractContext {
     private static final int MAX_CALLERS = 3;
     private static final int MAX_TESTS = 3;
     private static final int MAX_CALLEES = 4;
+    /** 바뀐 메서드 하나에 넣는 규칙 수 */
+    private static final int MAX_RULES = 6;
+    private static final int MAX_FIELD_RULES = 3;
     private static final Pattern NEW_TYPE = Pattern.compile("\\bnew\\s+([A-Z]\\w*)\\s*\\(");
 
     public static final ContractContext EMPTY = new ContractContext(List.of());
@@ -49,7 +58,8 @@ public final class ContractContext {
         NEW_CALLEE("이번에 새로 부르는 메서드"),
         LOST_EXCEPTION("PR 전 경로에서는 던지던 예외 (이제 이 경로에서 안 던짐)"),
         CALLER("이 메서드를 부르는 곳"),
-        TEST("이 메서드를 부르는 테스트");
+        TEST("이 메서드를 부르는 테스트"),
+        RULE("규칙 지도");
 
         private final String label;
 
@@ -79,6 +89,9 @@ public final class ContractContext {
 
         /** 사람이 읽는 한 줄: "PR 전에는 부르다 이제 안 부르는 메서드 PostService#getPost(Long) (PostService.java:28-31)" */
         public String describe() {
+            if (role == Role.RULE) {
+                return role.label() + ": " + code;
+            }
             return role.label() + " " + shortId(symbol) + " (" + location() + ")";
         }
     }
@@ -123,6 +136,7 @@ public final class ContractContext {
         RepoIndex head = ctx.headIndex();
         Source baseSrc = new Source(checkout.get().baseDir());
         Source headSrc = new Source(checkout.get().headDir());
+        RuleMap rules = ctx.baseRules();
 
         // 생성자는 대부분 의존성 주입 배선이라 뺀다
         List<ChangedMethod> candidates = ctx.changedMethods().stream()
@@ -145,7 +159,7 @@ public final class ContractContext {
                 continue;
             }
             List<Snippet> snippets = new ArrayList<>();
-            List<Snippet> wanted = snippets(m, bm.get(), hm.get(), base, head, baseSrc, headSrc, counter);
+            List<Snippet> wanted = snippets(m, bm.get(), hm.get(), base, head, baseSrc, headSrc, rules, counter);
             for (Snippet s : wanted) {
                 if (s.code().length() > budget) {
                     break;
@@ -162,15 +176,25 @@ public final class ContractContext {
     }
 
     private static List<Snippet> snippets(ChangedMethod m, MethodInfo bm, MethodInfo hm, RepoIndex base,
-                                          RepoIndex head, Source baseSrc, Source headSrc, int[] counter) {
+                                          RepoIndex head, Source baseSrc, Source headSrc, RuleMap rules,
+                                          int[] counter) {
         List<Snippet> result = new ArrayList<>();
         String baseBody = baseSrc.code(bm.file(), bm.startLine(), bm.endLine());
+        String headBody = headSrc.code(hm.file(), hm.startLine(), hm.endLine());
         result.add(snippet(counter, Role.BASE_BODY, "base", bm.id(), bm.file(), bm.startLine(), bm.endLine(), baseBody));
+        List<Rule> cited = new ArrayList<>();
+        rules.about(bm.id()).forEach(r -> addRule(r, cited, result, counter));
 
         List<MethodInfo> dropped = droppedCallees(base, head, m).stream().limit(MAX_CALLEES).toList();
         for (MethodInfo c : dropped) {
-            result.add(snippet(counter, Role.DROPPED_CALLEE, "base", c.id(), c.file(), c.startLine(), c.endLine(),
-                    baseSrc.code(c.file(), c.startLine(), c.endLine())));
+            List<Rule> about = rules.about(c.id());
+            if (about.isEmpty()) {
+                result.add(snippet(counter, Role.DROPPED_CALLEE, "base", c.id(), c.file(), c.startLine(), c.endLine(),
+                        baseSrc.code(c.file(), c.startLine(), c.endLine())));
+            } else {
+                // 같은 정보를 규칙 한 줄로
+                about.forEach(r -> addRule(r, cited, result, counter));
+            }
         }
         Set<String> baseCallees = callees(base, bm.id());
         Set<String> headCallees = callees(head, hm.id());
@@ -180,14 +204,20 @@ public final class ContractContext {
                 .flatMap(Optional::stream)
                 .filter(c -> !c.test() && !c.implicit() && !c.constructor())
                 .limit(MAX_CALLEES)
-                .forEach(c -> result.add(snippet(counter, Role.NEW_CALLEE, "head", c.id(), c.file(), c.startLine(),
-                        c.endLine(), headSrc.code(c.file(), c.startLine(), c.endLine()))));
+                .forEach(c -> {
+                    result.add(snippet(counter, Role.NEW_CALLEE, "head", c.id(), c.file(), c.startLine(),
+                            c.endLine(), headSrc.code(c.file(), c.startLine(), c.endLine())));
+                    rules.about(c.id()).forEach(r -> addRule(r, cited, result, counter));
+                });
+        fieldRules(rules, hm, headBody).forEach(r -> addRule(r, cited, result, counter));
+        conventionsFor(rules, hm, head).forEach(r -> addRule(r, cited, result, counter));
 
         // PR 전 경로(본문 + 한 단계 아래 메서드)에서 던지던 예외 중 지금 경로에는 없는 것
         Set<String> thrownBefore = thrown(baseBody, baseCallees, base, baseSrc);
         Set<String> thrownNow = thrown(headSrc.code(hm.file(), hm.startLine(), hm.endLine()), headCallees, head, headSrc);
         for (String name : thrownBefore) {
-            if (thrownNow.contains(name)) {
+            boolean ruled = cited.stream().anyMatch(r -> r.kind() == Rule.Kind.THROWS && name.equals(r.detail()));
+            if (thrownNow.contains(name) || ruled) {
                 continue;
             }
             base.types().values().stream()
@@ -216,6 +246,64 @@ public final class ContractContext {
                 .forEach(t -> result.add(snippet(counter, Role.TEST, "head", t.id(), t.file(), t.startLine(),
                         t.endLine(), headSrc.code(t.file(), t.startLine(), t.endLine()))));
         return result.stream().filter(s -> !s.code().isBlank()).toList();
+    }
+
+    private static void addRule(Rule r, List<Rule> cited, List<Snippet> out, int[] counter) {
+        if (cited.stream().anyMatch(c -> c.id().equals(r.id())) || cited.size() >= MAX_RULES) {
+            return;
+        }
+        cited.add(r);
+        out.add(snippet(counter, Role.RULE, "base", r.subject(), r.file(), r.line(), r.line(), r.describe()));
+    }
+
+    /** 바뀐 메서드가 쓰는 필드의 제약: 필드 이름이 본문에 나오고, 그 필드의 타입이 메서드의 타입 · 파라미터이거나 본문에 나오는 것 */
+    private static List<Rule> fieldRules(RuleMap rules, MethodInfo hm, String body) {
+        Set<String> types = new LinkedHashSet<>();
+        types.add(simple(hm.typeFqn()));
+        hm.paramTypes().forEach(p -> types.add(simple(p)));
+        List<Rule> result = new ArrayList<>();
+        // null 가능 · 길이 제약이 오해하기 쉬운 것이라 먼저, NOT NULL 은 뒤에
+        List<Rule> fields = rules.rules().stream()
+                .filter(r -> r.kind() == Rule.Kind.FIELD)
+                .sorted(Comparator.comparing((Rule r) -> "NOT_NULL".equals(r.detail())))
+                .toList();
+        for (Rule r : fields) {
+            if (result.size() >= MAX_FIELD_RULES) {
+                break;
+            }
+            if (r.kind() != Rule.Kind.FIELD) {
+                continue;
+            }
+            int dot = r.subject().lastIndexOf('.');
+            String field = r.subject().substring(dot + 1);
+            String owner = simple(r.subject().substring(0, dot));
+            boolean reaches = types.contains(owner) || Pattern.compile("\\b" + owner + "\\b").matcher(body).find();
+            if (reaches && Pattern.compile("\\b" + Pattern.quote(field) + "\\b").matcher(body).find()) {
+                result.add(r);
+            }
+        }
+        return result;
+    }
+
+    /** 이 메서드 종류에 해당하는 관례 */
+    private static List<Rule> conventionsFor(RuleMap rules, MethodInfo hm, RepoIndex head) {
+        List<Rule> result = new ArrayList<>();
+        if (RuleExtractor.isWriteServiceMethod(hm, head)) {
+            rules.convention(RuleExtractor.WRITE_GUARD).ifPresent(result::add);
+        }
+        if (RuleExtractor.isLookupServiceMethod(hm, head)) {
+            rules.convention(RuleExtractor.LOOKUP_THROWS).ifPresent(result::add);
+        }
+        TypeInfo type = head.types().get(hm.typeFqn());
+        if (type != null && RuleExtractor.isWriteEndpoint(hm, type)) {
+            rules.convention(RuleExtractor.WRITE_AUTH).ifPresent(result::add);
+        }
+        return result;
+    }
+
+    private static String simple(String type) {
+        String t = type.replaceAll("<.*>", "").replace("...", "").replace("[]", "").strip();
+        return t.substring(t.lastIndexOf('.') + 1);
     }
 
     /** base 버전은 부르는데 head 버전은 부르지 않는 레포 안 메서드. 생성자는 뺀다 (예외 생성은 LOST_EXCEPTION 으로 따로 본다) */
@@ -305,8 +393,10 @@ public final class ContractContext {
             }
             sb.append("PR 후 본문:\n```java\n").append(t.headCode()).append("\n```\n");
             for (Snippet s : t.snippets()) {
-                sb.append("\n[").append(s.ref()).append("] ").append(s.describe()).append('\n')
-                        .append("```java\n").append(s.code()).append("\n```\n");
+                sb.append("\n[").append(s.ref()).append("] ").append(s.describe()).append('\n');
+                if (s.role() != Role.RULE) {
+                    sb.append("```java\n").append(s.code()).append("\n```\n");
+                }
             }
         }
         return sb.toString();
