@@ -31,6 +31,7 @@ public final class AnalysisContext {
     private GitHistory history = GitHistory.empty();
     private List<BlameLine> blame = List.of();
     private Map<String, MethodAstDiff> astDiffs = Map.of();
+    private GuardDogReport guarddog;
     // 검사기들이 동시에 남길 수 있다
     private final List<String> notes = Collections.synchronizedList(new ArrayList<>());
 
@@ -87,6 +88,10 @@ public final class AnalysisContext {
     public List<String> notes() {
         return notes;
     }
+
+    public GuardDogReport guarddog() { return guarddog; }
+
+    void setGuarddog(GuardDogReport report) { this.guarddog = report; }
 
     /** patch 의 추가 라인을 감싸는 head 메서드들. A 에서 hunk 를 메서드에 연결할 때 쓴다. */
     public Set<MethodInfo> methodsTouchedBy(ChangedFile file) {

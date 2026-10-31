@@ -7,6 +7,8 @@ PR Guard 백엔드. AI 네이티브 개발 환경에서 **속도는 그대로 �
 - 프론트엔드: [pr-guard-web](https://github.com/dongguk-creative-fusion-2026/pr-guard-web)
 - 테스트·평가용 레포: [pr-guard-sandbox](https://github.com/dongguk-creative-fusion-2026/pr-guard-sandbox)
 
+- 의존성 보안: [GuardDog 연동·실행·검사 범위](docs/guarddog.md) (기본 꺼짐, npm/PyPI 신규·변경 직접 의존성)
+
 ## 흐름
 
 ```

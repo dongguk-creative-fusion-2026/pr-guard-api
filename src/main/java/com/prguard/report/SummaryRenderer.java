@@ -5,6 +5,7 @@ import com.prguard.analysis.ChangedFile;
 import com.prguard.analysis.ContextSummary;
 import com.prguard.analysis.Finding;
 import com.prguard.analysis.Grounding;
+import com.prguard.analysis.GuardDogReport;
 import com.prguard.analysis.Severity;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -31,6 +32,18 @@ public class SummaryRenderer {
         sb.append("## 🛡️ PR Guard 리뷰\n\n");
         sb.append("**판정: ").append(result.verdict().emoji()).append(' ').append(result.verdict().label())
                 .append("** · ").append(counts(findings)).append("\n\n");
+        GuardDogReport dependencyScan = result.context().guarddog();
+        if (dependencyScan != null) {
+            sb.append("**의존성 검사: ").append(dependencyScan.status().label()).append("**");
+            if (dependencyScan.requiresAttention()) {
+                sb.append(" — 검사를 완료하지 못해 머지 가능 판정을 보류했습니다. 실패 원인을 확인하고 다시 검사하세요.");
+            }
+            sb.append("\n\n");
+            GuardDogReport.Counts scanCounts = dependencyScan.counts();
+            sb.append("- 패키지 ").append(scanCounts.total()).append("개: 완료 ").append(scanCounts.completed())
+                    .append(" · 일부 실패 ").append(scanCounts.partial()).append(" · 실패 ").append(scanCounts.failed())
+                    .append(" · 건너뜀 ").append(scanCounts.skipped()).append("\n\n");
+        }
         sb.append('`').append(shortSha(headSha)).append("` 기준 · 변경 파일 ").append(files.size())
                 .append("개 · +").append(additions).append(" / -").append(deletions).append("\n\n");
         if (reviewUrl != null) {
@@ -79,6 +92,9 @@ public class SummaryRenderer {
         }
         ctx.notes().forEach(n -> sb.append("- ⚠️ ").append(n).append('\n'));
         sb.append("- 판정 기준: BLOCKER 1건 이상 → 머지 비권장, MAJOR 1건 이상 → 수정 후 머지\n");
+        if (dependencyScan != null) {
+            sb.append("- 의존성 검사가 일부 실패하거나 완료되지 않음 → 수정 후 머지 (실패 원인 확인 · 재검사 필요)\n");
+        }
         sb.append("- 근거: 지적을 확인한 층 (인덱스 · 이력 · 실행 · AI). AI 만 주장한 지적은 \"AI 만\"\n");
         sb.append("\n</details>\n\n");
 

@@ -185,7 +185,7 @@ public class AnalysisPipeline {
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
             List<Finding> grounded = ground(findings, ctx, sink, exec);
 
-            Verdict verdict = verdictPolicy.decide(grounded, majorThreshold);
+            Verdict verdict = verdictPolicy.decide(grounded, majorThreshold, ctx.guarddog());
             List<Finding> counted = grounded.stream().filter(f -> !f.refuted()).toList();
             sink.done(Stage.VERDICT, verdict.label(), data(
                     "verdict", verdict.name(),
@@ -193,7 +193,10 @@ public class AnalysisPipeline {
                     "major", count(counted, Severity.MAJOR),
                     "minor", count(counted, Severity.MINOR),
                     "refuted", grounded.size() - counted.size(),
-                    "total", counted.size()));
+                    "total", counted.size(),
+                    "guarddog", ctx.guarddog(),
+                    "reason", ctx.guarddog() != null && ctx.guarddog().requiresAttention()
+                            ? "의존성 검증 미완료: 실패 원인을 확인하고 다시 검사하세요." : null));
             return new AnalysisResult(grounded, verdict, outcome.summary(), reviewer.name(),
                     summarize(ctx, System.currentTimeMillis() - started));
         } finally {
@@ -227,10 +230,13 @@ public class AnalysisPipeline {
                 ctx.note("검사기 " + analyzer.id() + " 실패: " + e.getMessage());
             }
         }
-        sink.done(stage, "지적 " + result.size() + "건", data(
+        Map<String, Object> details = data(
                 "analyzers", group.stream().map(Analyzer::id).toList(),
                 "findings", findingViews(result),
-                "ms", System.currentTimeMillis() - t));
+                "ms", System.currentTimeMillis() - t);
+        boolean incomplete = stage == Stage.CHECK_C && ctx.guarddog() != null && ctx.guarddog().requiresAttention();
+        if (stage == Stage.CHECK_C) details.put("guarddog", ctx.guarddog());
+        sink.done(stage, (incomplete ? "의존성 검증 미완료 · " : "") + "지적 " + result.size() + "건", details);
         return result;
     }
 
@@ -602,7 +608,7 @@ public class AnalysisPipeline {
                         .toList(),
                 methods, history, ctx.history().commits().size(),
                 ctx.blame().stream().limit(50).toList(),
-                List.copyOf(ctx.notes()), elapsedMs);
+                List.copyOf(ctx.notes()), elapsedMs, ctx.guarddog());
     }
 
     private static List<ContextSummary.CallerView> callers(List<CallSite> calls) {

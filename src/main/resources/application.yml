@@ -21,6 +21,14 @@ management:
         include: health
 
 prguard:
+  guarddog:
+    enabled: ${GUARDDOG_ENABLED:false}
+    executable: ${GUARDDOG_EXECUTABLE:guarddog}
+    timeout: ${GUARDDOG_TIMEOUT:PT1M}
+    total-timeout: ${GUARDDOG_TOTAL_TIMEOUT:PT3M}
+    max-packages: ${GUARDDOG_MAX_PACKAGES:20}
+    max-output-bytes: ${GUARDDOG_MAX_OUTPUT_BYTES:1048576}
+    include-dev-dependencies: ${GUARDDOG_INCLUDE_DEV_DEPENDENCIES:true}
   api:
     # 있으면 /api/** 는 X-Api-Token 헤더가 이 값이어야 받는다 (pr-guard-web 의 API_TOKEN 과 같은 값). 콜백(웹훅 · 러너 · 그래프)은 제외
     token: ${API_TOKEN:}
