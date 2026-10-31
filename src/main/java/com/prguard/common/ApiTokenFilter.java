@@ -23,7 +23,7 @@ public class ApiTokenFilter extends OncePerRequestFilter {
 
     public static final String HEADER = "X-Api-Token";
     private static final Pattern OWN_AUTH = Pattern.compile(
-            "^/api/(github/webhook|test-runs/\\d+/.*|projects/\\d+/graph/(progress|result))$");
+            "^/api/(github/webhook|test-runs/\\d+/.*|projects/\\d+/graph/(progress|result)|sonar/(token|result))$");
 
     private final ApiTokenProperties props;
     private final ObjectMapper mapper;

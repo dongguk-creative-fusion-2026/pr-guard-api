@@ -163,12 +163,22 @@ rules:
 
 중복률 · 복잡도 · 커버리지 · 코드 냄새 · Quality Gate 를 리뷰에 싣는다 (`EXEC_SONAR`). 레포 주인이 SonarCloud 에 따로 등록하지 않는다:
 PR Guard 가 우리 조직(`SONAR_ORGANIZATION`) 아래에 레포마다 public 프로젝트(`prguard_{owner}_{repo}`)를 만들고, PR 코멘트도 PR Guard 가 직접 단다.
-실행 검증(`EXEC_RUNNER`)이 켜져 있어야 돈다 (Java 분석에 컴파일 결과가 필요해서 head 러너가 스캔한다).
+누가 스캔하는지는 리뷰마다 정한다 (단계 기록의 `via`).
 
-1. 리뷰 시작: 프로젝트가 없으면 만들고(`api/projects/create`), head 러너가 받아 갈 설정을 메모리에 둔다
-2. head 러너: 빌드 전에 `/api/test-runs/{id}/sonar` 로 설정을 받으면 JaCoCo 에이전트를 붙여 테스트 커버리지를 모은다.
-   테스트 · 변이 테스트 뒤 `/sonar/token` 으로 토큰을 **한 번만** 받아 `sonar-scanner` 로 PR 분석(`sonar.pullrequest.*`)을 올리고, 처리 작업 id 를 `report` 에 싣는다
-3. 실행 검증이 끝나면: 처리(`api/ce/task`)를 기다렸다가 이슈 · 지표 · Quality Gate 를 받는다
+| 스캔 | 언제 | 커버리지 |
+|---|---|---|
+| head 러너 (`RUNNER`) | 실행 검증(`EXEC_RUNNER`)이 이 리뷰에서 돌 때. 빌드 · 테스트 뒤에 컴파일 결과와 함께 스캔 | 있음 (JaCoCo) |
+| GitHub Actions (`ACTIONS`) | 실행 검증이 없을 때. `.github/workflows/sonar.yml` 이 PR 코드를 빌드 · 실행하지 않고 소스만 스캔 | 없음 |
+
+1. 리뷰 시작: 프로젝트가 없으면 만들고(`api/projects/create`) 스캔을 맡긴다
+   - 러너: head 러너가 받아 갈 설정을 메모리에 둔다
+   - Actions: 그래프 워크플로와 같은 레포 · ref · 토큰(`GRAPH_DISPATCH_TOKEN`)으로 `sonar.yml` 을 실행한다 (run-name `sonar {headSha}`)
+2. 스캔
+   - 러너: 빌드 전에 `/api/test-runs/{id}/sonar` 로 설정을 받으면 JaCoCo 에이전트를 붙여 테스트 커버리지를 모은다.
+     테스트 · 변이 테스트 뒤 `/sonar/token` 으로 토큰을 **한 번만** 받아 `sonar-scanner` 로 PR 분석(`sonar.pullrequest.*`)을 올리고, 처리 작업 id 를 `report` 에 싣는다
+   - Actions: PR 커밋과 base 브랜치를 받아 `/api/sonar/token` 에서 토큰을 **한 번만** 받고(저장소 비밀값을 쓰지 않음), 스캔 뒤 `/api/sonar/result` 로 처리 작업 id 를 보낸다.
+     API 는 runId 로 우리 레포의 실행 중인 `sonar.yml` 이고 run-name 이 그 커밋인지 GitHub 에 확인한 뒤에만 받는다
+3. 다른 분석이 끝나면: 스캔 결과(Actions 는 `SONAR_SCAN_TIMEOUT` 까지)와 처리(`api/ce/task`)를 기다렸다가 이슈 · 지표 · Quality Gate 를 받는다
    - `SONAR_ISSUE`: 이번 PR 이 추가한 줄에 걸린 이슈만. 취약점(C) · 버그(B)는 BLOCKER/CRITICAL → MAJOR, MAJOR → MINOR, 코드 냄새(D)는 MINOR 까지. Sonar 혼자서 머지를 막지는 않는다
    - `SONAR_GATE`: Quality Gate 실패. 심각도는 `SONAR_GATE_SEVERITY` (기본 Sonar way 는 새 코드 커버리지 80% 를 요구해 자주 실패하므로 기본 MINOR)
    - 단계 기록에 새 코드 커버리지 · 중복률 · 복잡도 등 지표와 SonarCloud 화면 링크
@@ -294,6 +304,7 @@ API는 캐시하지 않으므로 polling 용도로 과도하게 호출하지 않
 | GET | `/api/test-runs/{id}/mutation` | 러너 전용 (`X-Run-Token`, head 만). 변이 계획: 200 `timeout · class · test` 줄 · 202 고르는 중 · 204 없음 |
 | GET | `/api/test-runs/{id}/sonar` | 러너 전용 (`X-Run-Token`, head 만). SonarCloud 분석 설정: 200 `키 TAB 값` 줄 · 204 하지 않음 |
 | GET | `/api/test-runs/{id}/sonar/token` | 러너 전용 (`X-Run-Token`, head 만). 스캔 직전 한 번만 주는 SonarCloud 토큰. 이미 가져갔으면 204 |
+| POST | `/api/sonar/token` · `/api/sonar/result` | SonarCloud 스캔 워크플로 전용 (`{runId, headSha}` 를 GitHub 에 확인). 토큰 한 번 · 처리 작업 id 또는 실패 이유 |
 | GET | `/api/test-runs/{id}/selection` | 러너 전용 (`X-Run-Token`). 돌릴 테스트: 200 한 줄에 하나씩 테스트 클래스 · 202 고르는 중 · 204 전체 |
 | POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
@@ -348,7 +359,8 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `SEMGREP_CONFIGS` | `p/default,p/r2c-best-practices` | Semgrep 레지스트리 규칙. 레지스트리 이름 또는 규칙 파일 경로, 쉼표로 여러 개 (예: `p/java,p/owasp-top-ten`) |
 | `SEMGREP_BUNDLED` · `SEMGREP_REPO_RULES` | `true` · `true` | PR Guard 마이그레이션 규칙 · 레포 팀 규칙(`.semgrep.yml` · `.semgrep/`)도 함께 쓴다 |
 | `SEMGREP_TIMEOUT` | `PT3M` | Semgrep 한 번 실행의 제한 시간 |
-| `SONAR_ENABLED` | `false` | SonarCloud 분석 (실행 검증 필요) |
+| `SONAR_ENABLED` | `false` | SonarCloud 분석. 실행 검증이 있으면 head 러너가, 없으면 GitHub Actions 가 스캔 |
+| `SONAR_SCAN_TIMEOUT` | `PT15M` | Actions 스캔이 결과를 보내기를 기다리는 시간 |
 | `SONAR_ORGANIZATION` · `SONAR_TOKEN` | (없음) | 프로젝트를 만들 조직 키, 그 조직에 프로젝트를 만들고 분석을 올릴 수 있는 토큰 |
 | `SONAR_URL` · `SONAR_TIMEOUT` | `https://sonarcloud.io` · `PT5M` | SonarCloud 주소, 올린 분석의 처리를 기다리는 시간 |
 | `SONAR_GATE_SEVERITY` | `MINOR` | Quality Gate 실패를 남길 심각도 (`MAJOR` 면 "수정 후 머지") |

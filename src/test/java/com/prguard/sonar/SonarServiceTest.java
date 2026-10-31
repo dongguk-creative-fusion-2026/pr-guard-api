@@ -4,14 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.prguard.analysis.AnalysisContext;
 import com.prguard.analysis.Category;
 import com.prguard.analysis.Finding;
 import com.prguard.analysis.PullInfo;
 import com.prguard.analysis.Severity;
 import com.prguard.events.EventSink;
+import com.prguard.events.StageStatus;
+import com.prguard.github.GitHubClient;
+import com.prguard.github.GitHubProperties;
 import com.prguard.github.RepoRef;
+import com.prguard.graph.GraphProperties;
 import com.prguard.sonar.SonarService.Plan;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -97,7 +104,7 @@ class SonarServiceTest {
 
     @Test
     void registersPlanAndHandsTokenOutOnce() {
-        SonarProperties props = new SonarProperties(true, null, "org", "tok", null, null, null, 0);
+        SonarProperties props = new SonarProperties(true, null, "org", "tok", null, null, null, null, null, 0);
         List<String> created = new ArrayList<>();
         SonarClient client = new SonarClient(RestClient.builder(), props) {
             @Override
@@ -105,10 +112,10 @@ class SonarServiceTest {
                 created.add(key + " " + name);
             }
         };
-        SonarService service = new SonarService(props, client);
+        SonarService service = new SonarService(props, client, null, null);
         PullInfo pull = new PullInfo(new RepoRef("o", "board"), 7, "t", "", "me", "main", "feat/x", "abc", List.of());
 
-        assertThat(service.register(pull, EventSink.NONE)).isTrue();
+        assertThat(service.register(pull, EventSink.NONE, true)).isTrue();
 
         assertThat(created).containsExactly("prguard_o_board o/board");
         assertThat(service.plan("abc")).hasValueSatisfying(p -> {
@@ -122,11 +129,84 @@ class SonarServiceTest {
     }
 
     @Test
-    void inactiveWithoutToken() {
-        SonarProperties props = new SonarProperties(true, null, "org", "", null, null, null, 0);
-        SonarService service = new SonarService(props, null);
+    void withoutRunnerDispatchesActionsScanAndWaitsForItsResult() {
+        SonarProperties props = new SonarProperties(true, null, "org", "tok", null, null, null, Duration.ofSeconds(1),
+                null, 0);
+        SonarClient client = new SonarClient(RestClient.builder(), props) {
+            @Override
+            public void ensureProject(String key, String name) {
+            }
+        };
+        Map<String, String> dispatched = new HashMap<>();
+        GitHubClient github = new GitHubClient(RestClient.builder(), new GitHubProperties("http://localhost", null, false)) {
+            @Override
+            public void dispatchWorkflow(RepoRef repo, String workflow, String ref, Map<String, String> inputs, String token) {
+                dispatched.put("target", repo.fullName() + " " + workflow + "@" + ref);
+                dispatched.putAll(inputs);
+            }
+        };
+        GraphProperties workflows = new GraphProperties(null, "acme/pr-guard-api", "repo-graph.yml", "main", "dt",
+                null, null, null, 0, 0, null, null);
+        SonarService service = new SonarService(props, client, github, workflows);
         PullInfo pull = new PullInfo(new RepoRef("o", "board"), 7, "t", "", "me", "main", "feat/x", "abc", List.of());
-        assertThat(service.register(pull, EventSink.NONE)).isFalse();
+
+        assertThat(service.register(pull, EventSink.NONE, false)).isTrue();
+
+        assertThat(dispatched).containsEntry("target", "acme/pr-guard-api sonar.yml@main")
+                .containsEntry("head_sha", "abc").containsEntry("pr", "7").containsEntry("base_ref", "main")
+                .containsEntry("project_key", "prguard_o_board").containsEntry("organization", "org");
+        assertThat(service.waitingForActions("abc")).isTrue();
+        assertThat(service.takeToken("abc")).contains("tok");
+
+        service.reported("abc", null, "sonar-scanner 실패");
+        assertThat(service.waitingForActions("abc")).isFalse();
+        List<String> failed = new ArrayList<>();
+        EventSink sink = (stage, status, message, data) -> {
+            if (status == StageStatus.FAILED) {
+                failed.add(stage + " " + message);
+            }
+        };
+        assertThat(service.collect(pull, new AnalysisContext(pull, List.of()), sink)).isEmpty();
+        assertThat(failed).containsExactly("EXEC_SONAR sonar-scanner 실패");
+    }
+
+    @Test
+    void actionsScanThatNeverReportsTimesOut() {
+        SonarProperties props = new SonarProperties(true, null, "org", "tok", null, null, null, Duration.ofMillis(10),
+                null, 0);
+        SonarClient client = new SonarClient(RestClient.builder(), props) {
+            @Override
+            public void ensureProject(String key, String name) {
+            }
+        };
+        GitHubClient github = new GitHubClient(RestClient.builder(), new GitHubProperties("http://localhost", null, false)) {
+            @Override
+            public void dispatchWorkflow(RepoRef repo, String workflow, String ref, Map<String, String> inputs, String token) {
+            }
+        };
+        GraphProperties workflows = new GraphProperties(null, "acme/pr-guard-api", "repo-graph.yml", "main", null,
+                null, null, null, 0, 0, null, null);
+        SonarService service = new SonarService(props, client, github, workflows);
+        PullInfo pull = new PullInfo(new RepoRef("o", "board"), 7, "t", "", "me", "main", "feat/x", "abc", List.of());
+        service.register(pull, EventSink.NONE, false);
+
+        List<String> failed = new ArrayList<>();
+        EventSink sink = (stage, status, message, data) -> {
+            if (status == StageStatus.FAILED) {
+                failed.add(message);
+            }
+        };
+        assertThat(service.collect(pull, new AnalysisContext(pull, List.of()), sink)).isEmpty();
+        assertThat(failed).singleElement().asString().contains("GitHub Actions 스캔");
+        assertThat(service.waitingForActions("abc")).isFalse();
+    }
+
+    @Test
+    void inactiveWithoutToken() {
+        SonarProperties props = new SonarProperties(true, null, "org", "", null, null, null, null, null, 0);
+        SonarService service = new SonarService(props, null, null, null);
+        PullInfo pull = new PullInfo(new RepoRef("o", "board"), 7, "t", "", "me", "main", "feat/x", "abc", List.of());
+        assertThat(service.register(pull, EventSink.NONE, true)).isFalse();
         assertThat(service.plan("abc")).isEmpty();
     }
 }

@@ -106,16 +106,20 @@ prguard:
     # 워크플로 제한 시간(30분)보다 길게
     stale-after: PT40M
   sonar:
-    # SonarCloud: 등록된 레포마다 우리 조직 아래 public 프로젝트를 만들고, head 러너가 테스트 뒤 sonar-scanner 로 PR 분석을 올린다.
-    # 이번 PR 이 추가한 줄의 이슈 · 새 코드 커버리지 · 중복률 · Quality Gate 를 리뷰에 싣는다. 실행 검증(EXEC_RUNNER)이 켜져 있어야 돈다
+    # SonarCloud: 등록된 레포마다 우리 조직 아래 public 프로젝트를 만들고 PR 분석을 올린다.
+    # 실행 검증이 돌면 head 러너가 테스트 뒤에 (커버리지 포함), 아니면 GitHub Actions(.github/workflows/sonar.yml)가 소스만 스캔한다.
+    # 이번 PR 이 추가한 줄의 이슈 · 새 코드 커버리지 · 중복률 · Quality Gate 를 리뷰에 싣는다
     enabled: ${SONAR_ENABLED:false}
     url: ${SONAR_URL:https://sonarcloud.io}
     organization: ${SONAR_ORGANIZATION:}
-    # 조직 관리자 토큰 (프로젝트 만들기 · 분석 올리기). head 러너에는 테스트가 끝난 뒤 한 번만 건넨다
+    # 조직 관리자 토큰 (프로젝트 만들기 · 분석 올리기). 스캐너(head 러너 · Actions)에는 스캔 직전에 한 번만 건넨다
     token: ${SONAR_TOKEN:}
     project-prefix: prguard_
-    # 러너가 올린 분석을 SonarCloud 가 처리하기를 기다리는 시간
+    # 올린 분석을 SonarCloud 가 처리하기를 기다리는 시간
     timeout: ${SONAR_TIMEOUT:PT5M}
+    # Actions 스캔: 워크플로 파일 (prguard.graph 의 workflow-repo · workflow-ref · dispatch-token 을 같이 쓴다)과 결과를 기다리는 시간
+    workflow: sonar.yml
+    scan-timeout: ${SONAR_SCAN_TIMEOUT:PT15M}
     # Quality Gate 실패를 남길 심각도 (기본 Sonar way 는 새 코드 커버리지 80% 를 요구해 자주 실패한다)
     gate-severity: ${SONAR_GATE_SEVERITY:MINOR}
     max-issues: 50

@@ -9,7 +9,9 @@ import com.prguard.analysis.PullInfo;
 import com.prguard.analysis.Severity;
 import com.prguard.events.EventSink;
 import com.prguard.events.Stage;
+import com.prguard.github.GitHubClient;
 import com.prguard.github.RepoRef;
+import com.prguard.graph.GraphProperties;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,10 +27,16 @@ import org.springframework.stereotype.Service;
 /**
  * SonarCloud 분석 (중복률 · 복잡도 · 커버리지 · 코드 냄새 · Quality Gate).
  * <ol>
- *   <li>리뷰 시작: 우리 조직에 레포 프로젝트를 만들고(없으면) head 러너가 받아 갈 분석 설정을 둔다</li>
- *   <li>head 러너: 테스트 뒤 {@code /api/test-runs/{id}/sonar} 에서 설정 · 토큰을 받아 sonar-scanner 로 PR 분석을 올리고,
- *       보고서에 처리 작업 id 를 싣는다</li>
- *   <li>실행 검증이 끝나면: 처리를 기다렸다가 이슈 · 지표 · Quality Gate 를 받아 이번 PR 이 추가한 줄의 이슈만 지적으로 남긴다</li>
+ *   <li>리뷰 시작: 우리 조직에 레포 프로젝트를 만들고(없으면) 스캔을 맡긴다
+ *     <ul>
+ *       <li>실행 검증이 돌면 head 러너: 테스트 뒤 {@code /api/test-runs/{id}/sonar} 에서 설정 · 토큰을 받아
+ *           JaCoCo 커버리지와 함께 PR 분석을 올리고, 보고서에 처리 작업 id 를 싣는다</li>
+ *       <li>아니면 GitHub Actions(.github/workflows/sonar.yml): PR 코드를 빌드 · 실행하지 않고 소스만 스캔한다 (커버리지 없음).
+ *           {@code /api/sonar/token} 에서 토큰을 한 번 받고 {@code /api/sonar/result} 로 처리 작업 id 를 보낸다</li>
+ *     </ul>
+ *   </li>
+ *   <li>다른 분석이 끝나면: 스캔과 SonarCloud 처리를 기다렸다가 이슈 · 지표 · Quality Gate 를 받아
+ *       이번 PR 이 추가한 줄의 이슈만 지적으로 남긴다</li>
  * </ol>
  * 레포 주인이 SonarCloud 에 따로 등록할 필요가 없다. PR 코멘트는 PR Guard 가 직접 단다.
  */
@@ -43,12 +51,24 @@ public class SonarService {
 
     private final SonarProperties props;
     private final SonarClient client;
-    /** head 커밋 → 그 러너가 받아 갈 설정과 러너가 보낸 결과 */
+    private final GitHubClient github;
+    private final GraphProperties workflows;
+    /** head 커밋 → 스캔 설정과 스캐너(러너 · Actions)가 보낸 결과 */
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
-    public SonarService(SonarProperties props, SonarClient client) {
+    public SonarService(SonarProperties props, SonarClient client, GitHubClient github, GraphProperties workflows) {
         this.props = props;
         this.client = client;
+        this.github = github;
+        this.workflows = workflows;
+    }
+
+    /** 누가 스캔하나 */
+    public enum Via {
+        /** 실행 검증의 head 러너 (빌드 · 테스트 뒤, 커버리지 포함) */
+        RUNNER,
+        /** GitHub Actions (소스만, 커버리지 없음) */
+        ACTIONS
     }
 
     /**
@@ -62,12 +82,18 @@ public class SonarService {
 
     private static final class Pending {
         final Plan plan;
+        final Via via;
         volatile boolean tokenTaken;
         volatile String task;
         volatile String error;
 
-        Pending(Plan plan) {
+        Pending(Plan plan, Via via) {
             this.plan = plan;
+            this.via = via;
+        }
+
+        boolean reported() {
+            return task != null || error != null;
         }
     }
 
@@ -76,10 +102,12 @@ public class SonarService {
     }
 
     /**
-     * 리뷰 시작 때 부른다. 프로젝트를 만들고 head 러너용 설정을 둔다.
+     * 리뷰 시작 때 부른다. 프로젝트를 만들고 스캔을 맡긴다.
      * 꺼져 있거나 실패하면 단계를 건너뜀 · 실패로 알리고 false.
+     *
+     * @param runner 이 리뷰에서 실행 검증(head 러너)이 도나. 돌면 러너가, 아니면 GitHub Actions 가 스캔한다
      */
-    public boolean register(PullInfo pull, EventSink sink) {
+    public boolean register(PullInfo pull, EventSink sink, boolean runner) {
         if (!props.active()) {
             sink.skipped(Stage.EXEC_SONAR, props.enabled() ? "SONAR_TOKEN · SONAR_ORGANIZATION 미설정" : "SonarCloud 꺼짐");
             return false;
@@ -93,10 +121,39 @@ public class SonarService {
             sink.failed(Stage.EXEC_SONAR, "SonarCloud 프로젝트를 만들지 못함: " + e.getMessage());
             return false;
         }
-        pending.put(pull.headSha(), new Pending(new Plan(props.url(), props.organization(), key, pull.number(),
-                pull.headRef(), pull.baseRef())));
-        sink.running(Stage.EXEC_SONAR, "head 러너의 스캔 기다리는 중");
+        Plan plan = new Plan(props.url(), props.organization(), key, pull.number(), pull.headRef(), pull.baseRef());
+        if (runner) {
+            pending.put(pull.headSha(), new Pending(plan, Via.RUNNER));
+            sink.running(Stage.EXEC_SONAR, "head 러너의 스캔 기다리는 중 (테스트 뒤, 커버리지 포함)");
+            return true;
+        }
+        // 결과가 dispatch 보다 먼저 올 수 없도록 먼저 넣어 둔다
+        pending.put(pull.headSha(), new Pending(plan, Via.ACTIONS));
+        try {
+            github.dispatchWorkflow(RepoRef.parse(workflows.workflowRepo()), props.workflow(), workflows.workflowRef(), Map.of(
+                    "repo", pull.repo().fullName(),
+                    "pr", String.valueOf(pull.number()),
+                    "head_sha", pull.headSha(),
+                    "head_ref", pull.headRef() == null ? "" : pull.headRef(),
+                    "base_ref", pull.baseRef() == null ? "" : pull.baseRef(),
+                    "project_key", key,
+                    "organization", props.organization(),
+                    "host", props.url()), workflows.dispatchToken());
+        } catch (RuntimeException e) {
+            pending.remove(pull.headSha());
+            log.warn("SonarCloud 스캔 워크플로 실행 실패 {}: {}", key, e.getMessage());
+            sink.failed(Stage.EXEC_SONAR, "GitHub Actions 에 스캔을 맡기지 못함 (" + workflows.workflowRepo() + " "
+                    + props.workflow() + "): " + e.getMessage());
+            return false;
+        }
+        sink.running(Stage.EXEC_SONAR, "GitHub Actions 에서 스캔 중 (소스만, 커버리지 없음)");
         return true;
+    }
+
+    /** Actions 스캔 워크플로의 요청인지 확인할 때: 이 커밋을 기다리는 Actions 스캔이 있나 */
+    public boolean waitingForActions(String headSha) {
+        Pending p = pending.get(headSha);
+        return p != null && p.via == Via.ACTIONS && !p.reported();
     }
 
     /** head 러너가 빌드 전에 받아 간다 (커버리지를 모을지 정한다). 토큰은 없다 */
@@ -117,7 +174,7 @@ public class SonarService {
         return Optional.of(props.token());
     }
 
-    /** head 러너의 보고서에 실린 결과 (처리 작업 id 또는 스캔하지 못한 이유) */
+    /** 스캐너(head 러너 보고서 · Actions 콜백)가 보낸 결과 (처리 작업 id 또는 스캔하지 못한 이유) */
     public void reported(String headSha, String task, String error) {
         Pending p = pending.get(headSha);
         if (p != null) {
@@ -131,14 +188,20 @@ public class SonarService {
         pending.remove(headSha);
     }
 
-    /** 실행 검증이 끝난 뒤 부른다. SonarCloud 처리를 기다려 이슈 · 지표 · Quality Gate 를 지적으로 바꾼다 */
+    /** 다른 분석이 끝난 뒤 부른다. 스캔과 SonarCloud 처리를 기다려 이슈 · 지표 · Quality Gate 를 지적으로 바꾼다 */
     public List<Finding> collect(PullInfo pull, AnalysisContext ctx, EventSink sink) {
-        Pending p = pending.remove(pull.headSha());
+        Pending p = pending.get(pull.headSha());
         if (p == null) {
             return List.of();
         }
+        if (p.via == Via.ACTIONS) {
+            awaitScan(p);
+        }
+        pending.remove(pull.headSha());
         if (p.task == null) {
-            String reason = p.error != null ? p.error : "head 러너가 Sonar 분석을 올리지 않음";
+            String reason = p.error != null ? p.error
+                    : p.via == Via.ACTIONS ? "GitHub Actions 스캔이 " + props.scanTimeout().toMinutes() + "분 안에 결과를 보내지 않음"
+                    : "head 러너가 Sonar 분석을 올리지 않음";
             sink.failed(Stage.EXEC_SONAR, reason);
             ctx.notes().add("SonarCloud: " + reason);
             return List.of();
@@ -166,6 +229,7 @@ public class SonarService {
                     + " · Gate " + gateStatus
                     + (measures.containsKey("new_coverage") ? " · 새 코드 커버리지 " + measures.get("new_coverage") + "%" : "");
             sink.done(Stage.EXEC_SONAR, summary, data(
+                    "via", p.via.name(),
                     "projectKey", plan.projectKey(),
                     "url", dashboard(plan),
                     "gate", gateStatus,
@@ -183,6 +247,19 @@ public class SonarService {
             ctx.notes().add("SonarCloud 결과를 받지 못함: " + e.getMessage());
             sink.failed(Stage.EXEC_SONAR, e.getMessage());
             return List.of();
+        }
+    }
+
+    /** Actions 스캔이 결과를 보낼 때까지 기다린다 (시간이 다 되면 그냥 돌아온다) */
+    private void awaitScan(Pending p) {
+        long deadline = System.currentTimeMillis() + props.scanTimeout().toMillis();
+        while (!p.reported() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
