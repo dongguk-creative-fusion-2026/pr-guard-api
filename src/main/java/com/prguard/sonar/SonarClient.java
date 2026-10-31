@@ -1,6 +1,10 @@
 package com.prguard.sonar;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 import org.springframework.http.HttpHeaders;
@@ -16,6 +20,7 @@ import org.springframework.web.client.RestClient;
 public class SonarClient {
 
     private static final int PAGE_SIZE = 500;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final RestClient http;
     /** 토큰 없이 부르는 클라이언트. 우리 프로젝트는 public 이라 이슈 · 지표 · Gate 는 누구나 읽을 수 있다 */
@@ -27,7 +32,8 @@ public class SonarClient {
         RestClient.Builder b = builder.clone()
                 .baseUrl(props.url())
                 .defaultStatusHandler(HttpStatusCode::isError, (req, res) -> {
-                    throw new SonarException(req.getMethod() + " " + req.getURI().getPath() + " -> " + res.getStatusCode().value());
+                    throw new SonarException(req.getMethod() + " " + req.getURI().getPath() + " -> " + res.getStatusCode().value()
+                            + reason(res.getBody().readAllBytes()));
                 });
         this.anonymous = b.clone().build();
         if (props.token() != null && !props.token().isBlank()) {
@@ -43,9 +49,33 @@ public class SonarClient {
     private JsonNode read(Function<RestClient, JsonNode> call) {
         try {
             return call.apply(http);
-        } catch (SonarException e) {
-            return call.apply(anonymous);
+        } catch (SonarException withToken) {
+            try {
+                return call.apply(anonymous);
+            } catch (SonarException withoutToken) {
+                throw new SonarException("토큰: " + withToken.getMessage() + " / 토큰 없이: " + withoutToken.getMessage());
+            }
         }
+    }
+
+    /** SonarCloud 오류 본문 {"errors":[{"msg":…}]} 의 사유. 없으면 본문 앞부분 */
+    static String reason(byte[] body) {
+        String text = new String(body, StandardCharsets.UTF_8).strip();
+        if (text.isEmpty()) {
+            return "";
+        }
+        try {
+            List<String> msgs = new ArrayList<>();
+            for (JsonNode e : MAPPER.readTree(text).path("errors")) {
+                msgs.add(e.path("msg").asText());
+            }
+            if (!msgs.isEmpty()) {
+                return " (" + String.join("; ", msgs) + ")";
+            }
+        } catch (IOException e) {
+            // JSON 이 아니면 본문을 그대로 줄여 남긴다
+        }
+        return " (" + (text.length() > 200 ? text.substring(0, 200) + "…" : text) + ")";
     }
 
     /** 조직에 프로젝트가 없으면 public 으로 만든다 (무료 플랜은 public 프로젝트만 무제한) */
@@ -76,7 +106,8 @@ public class SonarClient {
     /** PR 분석에서 열린 이슈 (한 페이지) */
     public JsonNode issues(String key, int pr) {
         return read(c -> c.get()
-                .uri("/api/issues/search?componentKeys={k}&pullRequest={pr}&resolved=false&ps={n}", key, pr, PAGE_SIZE)
+                .uri("/api/issues/search?organization={o}&componentKeys={k}&pullRequest={pr}&resolved=false&ps={n}",
+                        props.organization(), key, pr, PAGE_SIZE)
                 .retrieve().body(JsonNode.class));
     }
 

@@ -11,6 +11,9 @@ import com.prguard.index.ChangedMethod;
 import com.prguard.index.JavaIndexer;
 import com.prguard.index.MethodDiff;
 import com.prguard.index.RepoIndex;
+import com.prguard.review.ConflictReview;
+import com.prguard.review.ConflictReviewer;
+import com.prguard.review.ConflictProperties;
 import com.prguard.review.LlmReview;
 import com.prguard.review.ReviewInput;
 import com.prguard.events.EventSink;
@@ -24,6 +27,9 @@ import com.prguard.graph.CallGraph;
 import com.prguard.graph.CallGraphService;
 import com.prguard.review.Reviewer;
 import com.prguard.review.StatsOnlyReviewer;
+import com.prguard.rulemap.Rule;
+import com.prguard.rulemap.RuleMap;
+import com.prguard.rulemap.RuleMapService;
 import com.prguard.sonar.SonarService;
 import com.prguard.workspace.Checkout;
 import com.prguard.workspace.RepoWorkspace;
@@ -52,8 +58,10 @@ import org.springframework.stereotype.Component;
  *   <li>양쪽 레포 인덱스 → 바뀐 메서드</li>
  *   <li>GitNexus 호출 그래프로 변경 영향 따라가기 (바뀐 함수를 부르는 함수 → 그 함수를 부르는 함수 …)</li>
  *   <li>git 이력 통계 · 바뀐 라인의 blame</li>
+ *   <li>규칙 지도: base 와 최신 기본 브랜치 커밋의 규칙 (저장해 둔 것을 다시 쓴다)</li>
  *   <li>결정적 검사기 실행 (base 에도 있던 문제는 제외)</li>
  *   <li>LLM 리뷰 (구조 정보를 함께 넘김)</li>
+ *   <li>기존 코드 충돌: 바뀐 메서드가 기대던 기존 코드를 모아 LLM 에 따로 묻는다 ({@link ContractContext})</li>
  *   <li>근거 확인: 지적마다 인덱스 · 이력 · 실행 · AI 층을 맞춰 보고, 인덱스와 어긋나는 AI 지적은 판정에서 뺀다</li>
  *   <li>판정 계산</li>
  * </ol>
@@ -78,6 +86,9 @@ public class AnalysisPipeline {
     private final EvidenceService evidence;
     private final FindingGrounder grounder;
     private final TestSelectionService selector;
+    private final ConflictReviewer conflictReviewer;
+    private final ConflictProperties conflictProps;
+    private final RuleMapService ruleMaps;
     private final SonarService sonar;
     private final CallGraphService callGraphs;
 
@@ -85,7 +96,9 @@ public class AnalysisPipeline {
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
                             TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder,
-                            TestSelectionService selector, SonarService sonar, CallGraphService callGraphs) {
+                            TestSelectionService selector, SonarService sonar, CallGraphService callGraphs,
+                            ConflictReviewer conflictReviewer, ConflictProperties conflictProps,
+                            RuleMapService ruleMaps) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -98,6 +111,9 @@ public class AnalysisPipeline {
         this.evidence = evidence;
         this.grounder = grounder;
         this.selector = selector;
+        this.conflictReviewer = conflictReviewer;
+        this.conflictProps = conflictProps;
+        this.ruleMaps = ruleMaps;
         this.sonar = sonar;
         this.callGraphs = callGraphs;
     }
@@ -172,8 +188,10 @@ public class AnalysisPipeline {
                             });
                 }
                 history(ctx, checkout, sink);
+                ruleMaps(ctx, checkout, sink);
             } else {
-                for (Stage stage : List.of(Stage.INDEX_BASE, Stage.INDEX_HEAD, Stage.METHOD_DIFF, Stage.HISTORY)) {
+                for (Stage stage : List.of(Stage.INDEX_BASE, Stage.INDEX_HEAD, Stage.METHOD_DIFF, Stage.HISTORY,
+                        Stage.RULE_MAP)) {
                     sink.skipped(stage, "소스가 없어 건너뜀");
                 }
             }
@@ -195,11 +213,14 @@ public class AnalysisPipeline {
                 checks.add(CompletableFuture.supplyAsync(() -> runChecks(stage, group, ctx, sink), executor));
             }
             CompletableFuture<LlmOutcome> llm = CompletableFuture.supplyAsync(() -> runLlm(ctx, sink), executor);
+            CompletableFuture<List<Finding>> conflicts = CompletableFuture.supplyAsync(() -> runConflict(ctx, sink),
+                    executor);
 
             List<Finding> findings = new ArrayList<>();
             checks.forEach(f -> findings.addAll(f.join()));
             LlmOutcome outcome = llm.join();
             findings.addAll(outcome.findings());
+            findings.addAll(conflicts.join());
             findings.addAll(execution.join());
             if (sonarPlanned) {
                 findings.addAll(sonar.collect(pull, ctx, sink));
@@ -291,6 +312,85 @@ public class AnalysisPipeline {
             sink.failed(Stage.LLM, e.getMessage());
             return new LlmOutcome("LLM 리뷰를 하지 못했습니다. 정적 분석 결과만 표시합니다.", List.of());
         }
+    }
+
+    /** 기존 코드 충돌. 바뀐 메서드가 기대던 기존 코드가 없으면 LLM 을 부르지 않는다. */
+    private List<Finding> runConflict(AnalysisContext ctx, EventSink sink) {
+        long t = System.currentTimeMillis();
+        if (!conflictReviewer.enabled()) {
+            sink.skipped(Stage.LLM_CONFLICT, conflictProps.enabled() ? "OPENAI_API_KEY 미설정" : "설정에서 꺼짐");
+            return List.of();
+        }
+        if (!ctx.indexed()) {
+            sink.skipped(Stage.LLM_CONFLICT, "레포 인덱스 없음");
+            return List.of();
+        }
+        try {
+            ContractContext contract = ContractContext.collect(ctx, conflictProps.maxMethods(), conflictProps.maxChars());
+            if (contract.isEmpty()) {
+                sink.skipped(Stage.LLM_CONFLICT, "본문이 바뀐 기존 메서드 없음");
+                return List.of();
+            }
+            sink.running(Stage.LLM_CONFLICT, "바뀐 메서드 " + contract.targets().size() + "개 · 기존 코드 "
+                    + contract.snippetCount() + "조각");
+            PullInfo p = ctx.pull();
+            ConflictReview review = conflictReviewer.review(new ConflictReviewer.Input(p.repo().fullName(), p.number(),
+                    p.title(), p.body(), p.commitMessages(), contract.render()));
+            List<Finding> findings = toConflictFindings(review, contract, ctx);
+            sink.done(Stage.LLM_CONFLICT, "충돌 " + findings.size() + "건", data(
+                    "model", reviewer.name(),
+                    "methods", contract.targets().stream()
+                            .map(target -> data("id", target.method().id(), "file", target.method().file(),
+                                    "snippets", target.snippets().stream()
+                                            .map(s -> data("ref", s.ref(), "role", s.role().name(), "side", s.side(),
+                                                    "symbol", s.symbol(), "file", s.file(), "line", s.startLine(),
+                                                    "endLine", s.endLine()))
+                                            .toList()))
+                            .toList(),
+                    "findings", findingViews(findings),
+                    "dropped", review.findings().size() - findings.size(),
+                    "ms", System.currentTimeMillis() - t));
+            return findings;
+        } catch (RuntimeException e) {
+            log.warn("기존 코드 충돌 검사 실패: {}", e.toString());
+            ctx.note("기존 코드 충돌 검사 실패: " + e.getMessage());
+            sink.failed(Stage.LLM_CONFLICT, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 충돌 지적을 검증한다: 바뀐 파일이 아니면 버리고, 라인이 diff 밖이면 라인을 지운다.
+     * 인용한 조각 id 중 묶음에 있는 것만 근거로 남긴다. 하나도 없으면 근거 없이 남겨 근거 확인에서 판정에서 빠진다.
+     */
+    static List<Finding> toConflictFindings(ConflictReview review, ContractContext contract, AnalysisContext ctx) {
+        List<Finding> result = new ArrayList<>();
+        for (ConflictReview.Item item : review.findings()) {
+            ChangedFile file = ctx.file(item.file()).orElse(null);
+            if (file == null) {
+                continue;
+            }
+            Severity severity;
+            try {
+                severity = Severity.valueOf(item.severity().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                severity = Severity.MINOR;
+            }
+            Integer line = item.line() != null && file.patch().commentableLines().contains(item.line())
+                    ? item.line() : null;
+            List<ContractContext.Snippet> cited = item.refs().stream()
+                    .map(contract::snippet)
+                    .flatMap(Optional::stream)
+                    .distinct()
+                    .toList();
+            String evidence = cited.isEmpty() ? null : String.join(" · ", cited.stream()
+                    .map(ContractContext.Snippet::describe).toList());
+            result.add(new Finding("LLM_CONFLICT", Category.IMPACT, severity, file.filename(), line, item.title(),
+                    item.message(), evidence, item.title().strip().toLowerCase(Locale.ROOT), Finding.LLM,
+                    Grounding.claim(FindingGrounder.CONTRACT_CONFLICT,
+                            cited.stream().map(ContractContext.Snippet::symbol).toList())));
+        }
+        return result;
     }
 
     /** 근거 확인. 실패해도 지적은 그대로 두고 판정을 계속한다. */
@@ -500,6 +600,46 @@ public class AnalysisPipeline {
             log.warn("이력 수집 실패: {}", e.toString());
             ctx.note("git 이력 수집 실패: " + e.getMessage());
             sink.failed(Stage.HISTORY, e.getMessage());
+        }
+    }
+
+    /** 규칙 지도. 실패해도 지도 없이 계속한다 (지도를 쓰는 검사는 건너뛴다). */
+    private void ruleMaps(AnalysisContext ctx, Checkout checkout, EventSink sink) {
+        if (!ctx.indexed()) {
+            sink.skipped(Stage.RULE_MAP, "레포 인덱스 없음");
+            return;
+        }
+        long t = System.currentTimeMillis();
+        sink.running(Stage.RULE_MAP, "규칙 지도");
+        try {
+            RuleMapService.Maps maps = ruleMaps.load(ctx.pull().repo(), checkout, ctx.pull().baseRef(), ctx.baseIndex());
+            ctx.setRuleMaps(maps.base(), maps.latest());
+            RuleMap base = maps.base();
+            RuleMap latest = maps.latest();
+            Set<String> baseIds = base.ids();
+            List<Rule> added = latest == null ? List.of()
+                    : latest.rules().stream().filter(r -> !baseIds.contains(r.id())).toList();
+            List<Rule> removed = latest == null ? List.of()
+                    : base.rules().stream().filter(r -> !latest.ids().contains(r.id())).toList();
+            sink.done(Stage.RULE_MAP, "규칙 " + base.rules().size() + "개"
+                    + (latest == null ? "" : " · PR 뒤 기본 브랜치 변경 " + (added.size() + removed.size()) + "개"), data(
+                    "baseSha", base.commitSha(),
+                    "baseCached", base.cached(),
+                    "rules", base.rules().size(),
+                    "byKind", base.rules().stream().collect(java.util.stream.Collectors.groupingBy(
+                            r -> r.kind().name(), LinkedHashMap::new, java.util.stream.Collectors.counting())),
+                    "conventions", base.conventions().stream()
+                            .map(r -> data("statement", r.statement(), "support", r.support(), "total", r.total()))
+                            .toList(),
+                    "latestSha", maps.latestSha(),
+                    "latestCached", latest != null && latest.cached(),
+                    "added", added.stream().limit(10).map(Rule::statement).toList(),
+                    "removed", removed.stream().limit(10).map(Rule::statement).toList(),
+                    "ms", System.currentTimeMillis() - t));
+        } catch (RuntimeException e) {
+            log.warn("규칙 지도 실패: {}", e.toString());
+            ctx.note("규칙 지도 실패: " + e.getMessage());
+            sink.failed(Stage.RULE_MAP, e.getMessage());
         }
     }
 

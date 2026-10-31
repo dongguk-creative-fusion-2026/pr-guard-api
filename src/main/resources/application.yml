@@ -151,6 +151,13 @@ prguard:
     min-co-support: 3
     min-confidence: 0.5
     max-structure-chars: 6000
+  conflict:
+    # 기존 코드 충돌: 바뀐 메서드가 기대던 기존 코드(PR 전 본문 · 안 부르게 된 메서드 · 예외 · 호출부 · 테스트)를 모아
+    # "기존 규칙과 충돌하는가"만 LLM 에 따로 묻는다 (OPENAI_API_KEY 필요)
+    enabled: ${CONFLICT_ENABLED:true}
+    max-methods: 4
+    # 기존 코드 조각 전체의 최대 길이 (문자 수)
+    max-chars: 9000
   links:
     # PR 코멘트의 "분석 과정 보기" 링크 대상 (pr-guard-web)
     web-url: ${WEB_URL:https://pr-guard-web.vercel.app}

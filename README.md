@@ -41,10 +41,12 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   │                 1단계 Java 호출은 JavaIndexer 가 같은 호출을 찾았는지 표시하고, 결과는 LLM 구조 정보 · 단계 IMPACT ·
   │   │                 분석 재료(graphImpact) · PR 요약의 "분석 정보"에 들어간다 (판정 규칙은 그대로)
   │   ├ GitHistoryLoader 최근 커밋 이력 · 동시 변경 통계 · 바뀐 라인의 blame
+  │   ├ RuleMapService  규칙 지도: base 와 지금 기본 브랜치 커밋의 코드가 지키는 규칙 (커밋마다 한 번 만들어 저장, 아래 "규칙 지도")
   │   ├ Analyzer 들     결정적 검사, 분류(A~D)별로 나란히 실행 (아래 "결정적 검사")
   │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달). 위 검사와 동시에 돈다
   │   │                 지적마다 kind(MISSING_SYMBOL · MISSING_CHECK · SECURITY …)와 근거 이름을 받고,
   │   │                 kind 가 SECURITY 면 분류를 C(보안)로 둔다
+  │   ├ ConflictReviewer 기존 코드 충돌: 바뀐 메서드가 기대던 기존 코드를 모아 "기존 규칙과 충돌하는가"만 따로 묻는다 (아래 "기존 코드 충돌")
   │   ├ TestRunService  실행 검증 (EXEC_RUNNER 가 켜져 있으면, 소스 준비 직후 나란히 시작)
   │   │   ├ 쿠버네티스 Job 으로 base · head 러너(runner/) 기동 → clone · 빌드 · 테스트 → JUnit 결과 콜백
   │   │   ├ TestSelector     영향 테스트 선택: 바뀐 메서드를 지나가는 테스트 클래스만 base · head 에서 돌린다 (아래 "영향 테스트 선택")
@@ -56,7 +58,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   │   ├ 인덱스: 결정적 검사가 같은 곳을 지적했나, AI 가 "없다"고 한 이름이 head 에 있나,
   │   │   │         "빠졌다"고 한 검사가 연결된 코드(바뀐 메서드 · 호출부 · 그 타입을 받는 메서드)에 있나 (있으면 위치만 보여 주고 반박하지 않음)
   │   │   ├ 이력 · 실행 · AI: 빠진 동시 변경 파일 · 지운 줄의 원래 커밋, 실행으로 증명한 동작 변화, AI 도 같은 곳을 지적했나
-  │   │   └ 상태: CONFIRMED (AI 아닌 층도 확인) · AI_ONLY (AI 만 주장) · REFUTED ("없다"고 한 이름이 head 에 있음 → 판정 · 라인 코멘트에서 뺌)
+  │   │   └ 상태: CONFIRMED (AI 아닌 층도 확인) · AI_ONLY (AI 만 주장) · REFUTED ("없다"고 한 이름이 head 에 있음, 충돌 근거로 든 기존 코드가 없음 → 판정 · 라인 코멘트에서 뺌)
   │   └ VerdictPolicy   판정 계산 (BLOCKER ≥1 → 머지 비권장, MAJOR ≥1 → 수정 후 머지, REFUTED 는 세지 않음)
   ├ 저장: findings, 판정, 분석 재료 요약(context)
   └ PR: 요약 코멘트 1개(계속 수정) + 라인 코멘트(같은 지적은 한 번만)
@@ -93,6 +95,40 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 요약이 다른 요청은 다른 관측 테스트와 같이 `EXEC_BEHAVIOR_DIFF`(MAJOR)로 핸들러 메서드에 붙고, PR 화면의 "동작 diff" 카드에 요청마다 base · head 응답이 나온다.
 
 
+## 기존 코드 충돌
+
+AI 는 요청받은 곳만 보고 고치다가, 기존 코드가 지키던 규칙(없으면 404, 정렬 순서, 원자적 갱신 …)을 모른 채 깨뜨린다. diff 에는 그 규칙이 보이지 않아 일반 리뷰로는 놓친다.
+예: sandbox #15 는 댓글 작성에서 `getPost`(없으면 `NotFoundException` → 404) 대신 `getReference`(조회 없음)를 불러, 없는 게시글이면 500 이 난다.
+
+1. **기존 코드 모으기** (`ContractContext`, LLM 없음): 본문 · 시그니처가 바뀐 메서드(테스트 아님, 최대 `max-methods`)마다 인덱스로 찾는다.
+   - PR 전 본문
+   - PR 전에는 부르다 이제 안 부르는 메서드 · 이번에 새로 부르는 메서드 (본문)
+   - PR 전 경로(본문 + 한 단계 아래 메서드)에서는 던지던 예외 중 이제 안 던지는 것 (타입 선언부, 예: `@ResponseStatus(NOT_FOUND)`)
+   - 이 메서드를 부르는 곳 (호출한 줄 앞뒤), 이 메서드나 안 부르게 된 메서드를 부르는 테스트
+
+   조각마다 `[C1]` 같은 id 를 붙이고, 전체 길이는 `max-chars` 까지. 모을 것이 없으면 LLM 을 부르지 않는다.
+2. **따로 묻기** (`ConflictReviewer`, 단계 `LLM_CONFLICT`): 일반 리뷰와 나란히, "이 변경이 기존 코드가 지키던 규칙과 충돌하는가"만 묻는다. 지적마다 충돌하는 조각 id(`refs`)를 반드시 받는다. 프롬프트는 `resources/prompts/conflict-system.md`.
+3. **근거 확인**: `LLM_CONFLICT` 지적(분류 B, kind `CONTRACT_CONFLICT`)은 인용한 조각이 모은 묶음에 있으면 인덱스 층에 그 코드를 맥락(RELATED)으로 남기고, 묶음에 없는 id 만 들었으면 근거를 지어낸 것으로 보고 REFUTED. 충돌인지는 AI 의 해석이라 인덱스가 확인(CONFIRMED)하지 않는다. 실행 검증이 같은 파일의 동작 변화를 증명하면 CONFIRMED.
+
+설정: `prguard.conflict.enabled`(`CONFLICT_ENABLED`) · `max-methods` · `max-chars`. `OPENAI_API_KEY` 가 없으면 건너뛴다.
+
+## 규칙 지도
+
+커밋 하나의 코드가 지키는 규칙 목록. LLM 없이 인덱스와 소스에서 뽑고(`RuleExtractor`), 커밋마다 한 번 만들어 `rule_maps` 에 저장해 다시 쓴다 (`RuleMapService`, 단계 `RULE_MAP`).
+
+- **사실**: 메서드가 던지는 예외(`@ResponseStatus` 면 HTTP 상태까지) · null 반환 · 부르는 검사(이름이 Guard · Policy · Validator 인 타입, require · check … 로 시작하는 메서드) · 권한 어노테이션 · 정렬 쿼리(`OrderBy` · `order by`) · 원자적 갱신(`SET x = x + 1`), 엔티티 필드 제약(NOT NULL · 길이 · null 가능)
+- **관례**: 같은 종류의 코드 2곳 이상, 75% 이상이 따르는 사실. 서비스 수정·삭제는 검사를 부른다 · 서비스 조회는 null 대신 예외 · 쓰기 API 는 권한 어노테이션 · 응답 DTO 는 email · password 같은 민감 필드를 담지 않는다
+
+예 (sandbox main): `PostService#getPost(Long): 찾는 값이 없으면 NotFoundException 예외를 던진다 → HTTP 404`, `User.bio: null 일 수 있다, 최대 300자`, `서비스의 수정·삭제 메서드는 검사를 부른다 (예: OwnershipGuard#requireOwner) (관례 4/5)`
+
+리뷰할 때 PR 의 base(merge-base) 지도와, base 브랜치 끝 커밋이 다르면 그 지도도 꺼내거나 만든다. 쓰는 곳:
+
+1. **기존 코드 충돌**: 바뀐 메서드 · 부르던 메서드 · 쓰는 필드의 규칙과 해당 관례를 `[C…]` 조각으로 넣는다. 규칙이 있는 "안 부르게 된 메서드"는 본문 대신 규칙 한 줄만
+2. **`stale-base-rule`**: PR 이 부르는 메서드의 규칙이 PR 을 만든 뒤 기본 브랜치에서 바뀌었으면 알린다 (아래 표). git 은 다른 파일이라 충돌로 보지 않는 의미 충돌
+3. **`convention`**: 새로 만든 코드가 관례를 어기면 알린다 (아래 표). 새 메서드는 PR 전 본문이 없어 기존 코드 충돌로는 볼 수 없다
+
+뽑는 방식이 바뀌면 `RuleExtractor.VERSION` 을 올린다 (저장된 지도는 같은 버전만 다시 쓴다). 코드에 흔적이 없는 규칙(기획 규칙 등)과 Java 밖 규칙은 뽑지 못한다.
+
 ## 테스트 신뢰도
 
 "테스트가 통과했다"가 아니라 "테스트가 버그를 실제로 잡느냐"를 본다.
@@ -120,6 +156,8 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | C · 보안 | `semgrep` | `SEMGREP` (제목 `Semgrep · 보안: …`) [Semgrep](https://semgrep.dev) 결과 중 보안 규칙(SQL Injection · XSS · 위험한 API · 시크릿 …). 실행은 아래 [Semgrep](#semgrep) 참고 | ERROR → MAJOR, WARNING → MINOR |
 | C · 보안 | `hardcoded-secret` | `HARDCODED_SECRET` 이번 PR 이 추가한 줄의 비밀값. 알려진 키 형식(AWS · GitHub · OpenAI · Slack · Google · 개인키)은 BLOCKER, 이름이 SECRET · TOKEN · PASSWORD · API_KEY … 인 상수 · 설정에 값을 직접 넣으면 MAJOR. `${...}` 주입 · 헤더 이름 · 테스트 코드 제외, 증거에는 값 앞 4자만 | BLOCKER / MAJOR |
 | D · 위험도 | `architecture-delta` | base · head 인덱스의 파일 간 의존을 비교해 이번 PR 이 만든 의존만 본다. `ARCH_LAYER_BYPASS` 웹이 서비스를 건너뛰고 저장소를 바로 부름(프로젝트가 평소 서비스를 거칠 때만), `ARCH_REVERSE_DEPENDENCY` 아래 계층이 위 계층을 부름, `ARCH_NEW_MODULE_DEPENDENCY` 의존하지 않던 두 모듈 사이 새 의존. 증거는 "출발 파일 → 도착 파일" | MAJOR |
+| B · 영향 | `stale-base-rule` | `STALE_BASE_RULE` PR 이 부르는 메서드(PR 이 바꾸지 않은 것)의 규칙이 PR 을 만든 뒤 기본 브랜치에서 바뀜 (규칙 지도 두 장 비교). 예외 · 검사 · 권한 · 정렬 · 원자적 갱신이 사라지거나 null 반환이 생기면 MAJOR | MAJOR / MINOR |
+| C · 보안 | `convention` | 새 코드가 레포 관례(규칙 지도)를 어김: `CONVENTION_GUARD_MISSING` 새 수정·삭제 서비스 메서드에 검사 없음, `CONVENTION_AUTH_MISSING` 새 쓰기 API 에 권한 어노테이션 없음, `CONVENTION_SENSITIVE_FIELD` 응답 DTO 에 민감 필드를 넣음, `CONVENTION_SENSITIVE_RESPONSE` 새 API 가 민감 필드 있는 타입(엔티티)을 그대로 돌려줌 → MAJOR. `CONVENTION_LOOKUP_NULL` 새 조회 메서드가 null 반환 → MINOR (B) | MAJOR / MINOR |
 | D · 위험도 | `semgrep-quality` | `SEMGREP` 보안이 아닌 Semgrep 결과. 제목에 용도가 붙는다: `버그 패턴`(correctness) · `모범 사례`(best-practice · 성능 · 유지보수성) · `팀 규칙`(레포 규칙 파일) · `마이그레이션`(deprecated · 제거된 API, 수정 제안 포함) | ERROR → MAJOR, WARNING → MINOR (모범 사례는 MINOR 까지) |
 | D · 위험도 | `test-trust` | 테스트 신뢰도(정적): 이번 PR 이 바꾼 테스트만 본다. `TEST_REMOVED` 검증하던 테스트를 지웠는데 그 테스트가 부르던 코드는 남음(실패 경로 검증이면 강조), `TEST_WEAKENED` 실패 경로 검증(assertThrows · never() …)이 줄어듦, `TEST_DISABLED` @Disabled · @Ignore 추가 → MAJOR. `TEST_NO_ASSERTION` 검증 없는 테스트, `TEST_TRIVIAL_ASSERTION` 항상 참인 검증뿐, `TEST_SWALLOWED_EXCEPTION` 예외를 삼키는 빈 catch, 검증 수 감소, 코드와 함께 지운 테스트 → MINOR. 같은 클래스의 검증 보조 메서드 호출 · JUnit 4 `@Test(expected)` 도 검증으로 센다 | MAJOR / MINOR |
 
@@ -248,6 +286,7 @@ API는 캐시하지 않으므로 polling 용도로 과도하게 호출하지 않
 | `graph` | 레포 전체 파일 의존성 그래프: 대기열 처리·워크플로 실행(`GraphWorker`), 결과 받기(`GraphController`), 로컬 실행(`GraphBuilder`) |
 | `index` | Java 레포 인덱스 (`JavaIndexer`, `RepoIndex`), base↔head 메서드 비교 (`MethodDiff`) |
 | `history` | git log 통계 · 동시 변경(co-change) · blame |
+| `rulemap` | 규칙 지도: 규칙 추출(`RuleExtractor`), 커밋별 저장(`RuleMapRepository`), base · 최신 기본 브랜치 지도 꺼내기(`RuleMapService`) |
 | `diff` | GitHub patch 해석 (hunk, 추가·삭제 라인, 라인 코멘트 가능 라인) |
 | `analysis` | 지적 사항 모델(`Finding`), 검사기(`Analyzer`, `SnapshotAnalyzer`), 파이프라인, 근거 확인(`FindingGrounder`, `Grounding`), 판정 |
 | `analysis.rules` | 결정적 검사 규칙 (위 "결정적 검사" 표) |

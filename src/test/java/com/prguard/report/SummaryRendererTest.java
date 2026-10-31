@@ -26,7 +26,7 @@ class SummaryRendererTest {
     private static String render(GuardDogReport report, Verdict verdict) {
         var index = new ContextSummary.IndexStats(0, 0, 0, 0, 0, 0);
         var context = new ContextSummary("base", "1234567890", index, index, List.of(), List.of(), List.of(),
-                0, List.of(), List.of(), 0, report);
+                0, List.of(), List.of(), 0, GraphImpact.empty(), report);
         return new SummaryRenderer().render("1234567890", List.of(),
                 new AnalysisResult(List.of(), verdict, "", "stats-only", context), null);
     }

@@ -15,6 +15,7 @@ import com.prguard.evidence.EvidenceService;
 import com.prguard.execution.TestRunService;
 import com.prguard.execution.TestSelectionService;
 import com.prguard.github.*;
+import com.prguard.graph.CallGraphService;
 import com.prguard.history.GitHistoryLoader;
 import com.prguard.index.JavaIndexer;
 import com.prguard.project.ProjectRepository;
@@ -23,6 +24,9 @@ import com.prguard.pull.PullRequestRepository;
 import com.prguard.report.CommentPublisher;
 import com.prguard.report.SummaryRenderer;
 import com.prguard.review.*;
+import com.prguard.rulemap.RuleMap;
+import com.prguard.rulemap.RuleMapService;
+import com.prguard.sonar.SonarService;
 import com.prguard.workspace.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -237,10 +241,15 @@ class GuardDogReviewIntegrationTest {
         RepoWorkspace workspace = mock(RepoWorkspace.class);
         when(workspace.prepare(eq(repo), anyLong(), eq(1), eq("main"), eq(headSha))).thenReturn(checkout);
         var analysisProps = new AnalysisProperties(100, 3, 0.5, 6000);
+        // 이 테스트는 GuardDog 만 본다: Sonar · 호출 그래프는 mock 기본값(없음), 기존 코드 충돌은 끄고, 규칙 지도는 빈 지도
+        RuleMapService ruleMaps = mock(RuleMapService.class);
+        when(ruleMaps.load(any(), any(), any(), any())).thenReturn(new RuleMapService.Maps(RuleMap.EMPTY, null, null));
         AnalysisPipeline pipeline = new AnalysisPipeline(workspace, new JavaIndexer(), new GitHistoryLoader(git),
                 List.of(new GuardDogAnalyzer(settings, client, mapper)), new StatsOnlyReviewer(), new VerdictPolicy(1),
                 analysisProps, executor, mock(TestRunService.class), mock(EvidenceService.class),
-                new FindingGrounder(analysisProps), mock(TestSelectionService.class));
+                new FindingGrounder(analysisProps), mock(TestSelectionService.class), mock(SonarService.class),
+                mock(CallGraphService.class), ConflictReviewer.DISABLED, new ConflictProperties(false, 4, 9000),
+                ruleMaps);
         CommentPublisher publisher = mock(CommentPublisher.class);
         var events = new ReviewEventBus(new ReviewEventRepository(jdbc), mapper);
         var worker = new ReviewWorker(reviews, projects, pulls, findings, github, pipeline, new SummaryRenderer(),
