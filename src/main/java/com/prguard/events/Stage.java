@@ -4,7 +4,7 @@ package com.prguard.events;
  * 리뷰 파이프라인 단계. 화면의 그래프 노드와 1:1 로 대응한다.
  *
  * <pre>
- * COLLECT → CHECKOUT → INDEX_BASE ∥ INDEX_HEAD → METHOD_DIFF → HISTORY
+ * COLLECT → CHECKOUT → INDEX_BASE ∥ INDEX_HEAD → METHOD_DIFF → IMPACT → HISTORY
  *        → CHECK_A ∥ CHECK_B ∥ CHECK_C ∥ CHECK_D ∥ LLM → GROUND → VERDICT → PUBLISH → REVIEW
  *
  * 실행 검증 레인 (CHECKOUT 뒤에서 나란히 돌고 GROUND 에 합류):
@@ -23,6 +23,8 @@ public enum Stage {
     INDEX_HEAD,
     /** base↔head 메서드 비교와 호출부 */
     METHOD_DIFF,
+    /** GitNexus 호출 그래프로 바뀐 함수를 부르는 함수를 여러 단계 따라간다 (언어 무관, 소스 없이도) */
+    IMPACT,
     /** git 동시 변경 통계와 blame */
     HISTORY,
     CHECK_A,
