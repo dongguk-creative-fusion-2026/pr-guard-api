@@ -31,6 +31,9 @@ const GRAPH_FETCH_DEPTH = 300;
 const MAX_FILES_PER_COMMIT = 40;
 const MIN_CO_SUPPORT = 2;
 const MAX_CO_PAIRS = 400;
+// 변경 영향 분석용 호출 그래프 상한 (그래프 JSON 이 수 MB 를 넘지 않게)
+const MAX_IMPACT_FUNCTIONS = 30000;
+const MAX_IMPACT_CALLS = 120000;
 
 
 // 파일 사이 의존으로 보는 관계. 구조(CONTAINS, DEFINES, HAS_METHOD …)와 클러스터·흐름(MEMBER_OF, STEP_IN_PROCESS)은 뺀다
@@ -111,6 +114,8 @@ try {
     await closeLbug(id).catch(() => {});
   }
   const graph = toGraph(rows, analyzeMs);
+  // 리뷰의 변경 영향 분석용 호출 그래프 (화면용 functions · calls 와 달리 파일 수로 자르지 않는다)
+  graph.impact = toImpact(rows);
   // 파일 줄 수와 git 이력 (코드 시티 · 핫스팟 · 숨은 결합)
   for (const node of graph.nodes) node.lines = countLines(join(repo, node.id));
   graph.history = readHistory(repo, new Set(graph.nodes.map((n) => n.id)));
@@ -278,6 +283,42 @@ function readHistory(repoDir, files) {
     authors: [...authorIndex.keys()],
     // git log 순서와 작성 시각이 어긋나는 커밋(리베이스 등)이 있어 시각으로 정렬한다
     timeline: timeline.sort((x, y) => x.at - y.at),
+  };
+}
+
+/**
+ * 리뷰가 바뀐 줄 → 함수 → 그 함수를 부르는 함수로 영향을 따라갈 수 있게, 레포 전체의 함수와 호출을 짧은 배열로 담는다.
+ * files: 경로, functions: [파일 번호, 이름, 시작 줄, 끝 줄], calls: [부르는 함수 번호, 불리는 함수 번호].
+ * 너무 큰 레포는 MAX_IMPACT_* 에서 자르고 truncated 로 알린다.
+ */
+function toImpact({ functions, calls }) {
+  const num = (v) => Number(v);
+  const files = [];
+  const fileIndex = new Map();
+  const list = [];
+  const fnIndex = new Map();
+  const sorted = [...functions].sort((a, b) => a.file.localeCompare(b.file) || num(a.line) - num(b.line));
+  for (const f of sorted.slice(0, MAX_IMPACT_FUNCTIONS)) {
+    if (!fileIndex.has(f.file)) {
+      fileIndex.set(f.file, files.length);
+      files.push(f.file);
+    }
+    fnIndex.set(f.id, list.length);
+    list.push([fileIndex.get(f.file), f.name, num(f.line), num(f.endLine)]);
+  }
+  const edges = [];
+  for (const c of calls) {
+    const s = fnIndex.get(c.source);
+    const t = fnIndex.get(c.target);
+    if (s === undefined || t === undefined) continue;
+    if (edges.length >= MAX_IMPACT_CALLS) break;
+    edges.push([s, t]);
+  }
+  return {
+    files,
+    functions: list,
+    calls: edges,
+    truncated: functions.length > list.length || edges.length >= MAX_IMPACT_CALLS,
   };
 }
 

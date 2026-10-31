@@ -20,6 +20,8 @@ import com.prguard.execution.TestSelection;
 import com.prguard.execution.TestSelectionService;
 import com.prguard.events.Stage;
 import com.prguard.execution.TestRunService;
+import com.prguard.graph.CallGraph;
+import com.prguard.graph.CallGraphService;
 import com.prguard.review.Reviewer;
 import com.prguard.review.StatsOnlyReviewer;
 import com.prguard.sonar.SonarService;
@@ -48,6 +50,7 @@ import org.springframework.stereotype.Component;
  * <ol>
  *   <li>base(merge-base)·head 소스 꺼내기</li>
  *   <li>양쪽 레포 인덱스 → 바뀐 메서드</li>
+ *   <li>GitNexus 호출 그래프로 변경 영향 따라가기 (바뀐 함수를 부르는 함수 → 그 함수를 부르는 함수 …)</li>
  *   <li>git 이력 통계 · 바뀐 라인의 blame</li>
  *   <li>결정적 검사기 실행 (base 에도 있던 문제는 제외)</li>
  *   <li>LLM 리뷰 (구조 정보를 함께 넘김)</li>
@@ -76,12 +79,13 @@ public class AnalysisPipeline {
     private final FindingGrounder grounder;
     private final TestSelectionService selector;
     private final SonarService sonar;
+    private final CallGraphService callGraphs;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
                             TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder,
-                            TestSelectionService selector, SonarService sonar) {
+                            TestSelectionService selector, SonarService sonar, CallGraphService callGraphs) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -95,6 +99,7 @@ public class AnalysisPipeline {
         this.grounder = grounder;
         this.selector = selector;
         this.sonar = sonar;
+        this.callGraphs = callGraphs;
     }
 
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb) {
@@ -121,6 +126,12 @@ public class AnalysisPipeline {
      */
     public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold,
                               Long reviewId, boolean execEnabled) {
+        return run(pull, files, repoKb, sink, majorThreshold, reviewId, execEnabled, null);
+    }
+
+    /** @param projectId GitNexus 호출 그래프를 읽을 프로젝트 (없으면 변경 영향 단계를 건너뛴다) */
+    public AnalysisResult run(PullInfo pull, List<ChangedFile> files, long repoKb, EventSink sink, Integer majorThreshold,
+                              Long reviewId, boolean execEnabled, Long projectId) {
         long started = System.currentTimeMillis();
         boolean exec = testRuns.enabled() && execEnabled;
         AnalysisContext ctx = new AnalysisContext(pull, files);
@@ -165,6 +176,8 @@ public class AnalysisPipeline {
                     sink.skipped(stage, "소스가 없어 건너뜀");
                 }
             }
+            // GitNexus 그래프는 미리 만들어 둔 것이라 소스를 받지 못해도 patch 만으로 따라갈 수 있다
+            graphImpact(ctx, projectId, sink);
 
             if (!sonarPlanned && (!exec || checkout == null)) {
                 sink.skipped(Stage.EXEC_SONAR, "실행 검증이 돌지 않아 건너뜀 (head 러너에서 스캔)");
@@ -401,6 +414,48 @@ public class AnalysisPipeline {
         }
     }
 
+    private void graphImpact(AnalysisContext ctx, Long projectId, EventSink sink) {
+        if (projectId == null) {
+            sink.skipped(Stage.IMPACT, "프로젝트 없음");
+            return;
+        }
+        long t = System.currentTimeMillis();
+        sink.running(Stage.IMPACT, "GitNexus 호출 그래프");
+        try {
+            Optional<CallGraph> graph = callGraphs.load(projectId);
+            if (graph.isEmpty()) {
+                sink.skipped(Stage.IMPACT, "GitNexus 그래프가 아직 없음");
+                return;
+            }
+            String baseSha = ctx.checkout().map(Checkout::baseSha).orElse(null);
+            GraphImpact impact = GraphImpactTracer.trace(graph.get(), ctx.files(), baseSha, ctx.headIndex(),
+                    ctx.changedMethods());
+            ctx.setGraphImpact(impact);
+            if (!impact.baseMatches()) {
+                ctx.note("GitNexus 그래프는 " + shortSha(impact.commitSha()) + " 기준이라 이 PR 의 base 와 줄 위치가 조금 다를 수 있습니다");
+            }
+            if (!impact.complete()) {
+                ctx.note("GitNexus 그래프가 레포 일부만 담고 있어 빠진 호출이 있을 수 있습니다 (그래프를 다시 만들면 전체를 담습니다)");
+            }
+            sink.done(Stage.IMPACT, "바뀐 함수 " + impact.changed().size() + "개 → 영향 " + impact.impacted().size()
+                    + "개 (" + impact.maxDepth() + "단계)", data(
+                    "commitSha", impact.commitSha(),
+                    "baseMatches", impact.baseMatches(),
+                    "complete", impact.complete(),
+                    "changed", impact.changed().stream().limit(30).toList(),
+                    "impacted", impact.impacted().stream().limit(60).toList(),
+                    "impactedFiles", impact.impactedFiles().stream().limit(50).toList(),
+                    "unmapped", impact.unmapped().stream().limit(30).toList(),
+                    "confirmed", impact.confirmedCount(),
+                    "truncated", impact.truncated(),
+                    "ms", System.currentTimeMillis() - t));
+        } catch (RuntimeException e) {
+            log.warn("변경 영향 추적 실패: {}", e.toString());
+            ctx.note("GitNexus 변경 영향 추적 실패: " + e.getMessage());
+            sink.failed(Stage.IMPACT, e.getMessage());
+        }
+    }
+
     private void history(AnalysisContext ctx, Checkout checkout, EventSink sink) {
         long t = System.currentTimeMillis();
         sink.running(Stage.HISTORY, "git log · blame");
@@ -513,11 +568,8 @@ public class AnalysisPipeline {
 
     /** LLM 이 diff 밖을 추측하지 않도록 정적 분석으로 확인한 사실만 넘긴다. */
     private String structureText(AnalysisContext ctx) {
-        if (!ctx.indexed()) {
-            return "";
-        }
         StringBuilder sb = new StringBuilder();
-        for (ChangedMethod m : ctx.changedMethods()) {
+        for (ChangedMethod m : ctx.indexed() ? ctx.changedMethods() : List.<ChangedMethod>of()) {
             if (sb.length() > props.maxStructureChars()) {
                 sb.append("... (생략)\n");
                 break;
@@ -540,7 +592,30 @@ public class AnalysisPipeline {
             }
             sb.append('\n');
         }
+        graphImpactText(ctx.graphImpact(), sb);
         return sb.toString();
+    }
+
+    /** GitNexus 로 따라간 영향: 바뀐 함수에서 부르는 쪽으로 몇 단계까지. JavaIndexer 가 못 보는 2단계 이상 · Java 밖 호출 */
+    private void graphImpactText(GraphImpact impact, StringBuilder sb) {
+        if (impact.impacted().isEmpty() || sb.length() > props.maxStructureChars()) {
+            return;
+        }
+        sb.append("\n[GitNexus 호출 그래프로 따라간 변경 영향 (기본 브랜치 ").append(shortSha(impact.commitSha()))
+                .append(" 기준)]\n");
+        if (!impact.impactedFiles().isEmpty()) {
+            sb.append("- 이 PR 이 고치지 않았지만 영향을 받는 파일: ")
+                    .append(String.join(", ", impact.impactedFiles().stream().limit(10).toList())).append('\n');
+        }
+        for (GraphImpact.Fn f : impact.impacted()) {
+            if (sb.length() > props.maxStructureChars()) {
+                sb.append("... (생략)\n");
+                break;
+            }
+            sb.append("- ").append(f.depth()).append("단계: ").append(f.file()).append('#').append(f.name())
+                    .append(':').append(f.line()).append(" → ").append(f.via())
+                    .append(f.confirmed() ? " (인덱스로도 확인)" : "").append('\n');
+        }
     }
 
     private static String kindLabel(ChangedMethod m) {
@@ -618,7 +693,7 @@ public class AnalysisPipeline {
                         .toList(),
                 methods, history, ctx.history().commits().size(),
                 ctx.blame().stream().limit(50).toList(),
-                List.copyOf(ctx.notes()), elapsedMs);
+                List.copyOf(ctx.notes()), elapsedMs, ctx.graphImpact());
     }
 
     private static List<ContextSummary.CallerView> callers(List<CallSite> calls) {
