@@ -13,6 +13,19 @@ java {
 
 repositories { mavenCentral() }
 
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+    mockitoAgent
+}
+
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
@@ -31,8 +44,24 @@ dependencies {
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Java 21 / Windows: attach 권한에 의존하지 않고 테스트용 계측을 JVM 시작 때 준비한다.
+    mockitoAgent('org.mockito:mockito-core') { transitive = false }
 }
 
 bootJar { archiveFileName = 'app.jar' }
 
 tasks.named('test') { useJUnitPlatform() }
+
+tasks.withType(Test).configureEach {
+    doFirst { jvmArgs "-javaagent:${configurations.mockitoAgent.singleFile.absolutePath}" }
+}
+
+tasks.register('guarddogIntegrationTest', Test) {
+    description = 'Runs real GuardDog CLI and PostgreSQL review-flow verification (explicit opt-in).'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    reports.junitXml.outputLocation = layout.buildDirectory.dir('reports/guarddog/junit')
+    useJUnitPlatform()
+    shouldRunAfter tasks.named('test')
+}

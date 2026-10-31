@@ -1,0 +1,38 @@
+# Optional API image with GuardDog CLI. The default production Dockerfile is unchanged.
+FROM gradle:8.14-jdk21 AS build
+WORKDIR /workspace
+COPY settings.gradle build.gradle ./
+RUN gradle dependencies --no-daemon > /dev/null
+COPY src ./src
+RUN gradle bootJar --no-daemon -x test
+
+# Explicit verification target. Its database is supplied by scripts/verify-guarddog.ps1.
+FROM build AS verification
+USER root
+ARG GUARDDOG_VERSION=3.2.0
+RUN apt-get update && apt-get install -y --no-install-recommends git python3 python3-venv \
+    && python3 -m venv /opt/guarddog \
+    && /opt/guarddog/bin/pip install --no-cache-dir "guarddog==${GUARDDOG_VERSION}" \
+    && /opt/guarddog/bin/python -c 'import shutil, sysconfig; shutil.copytree(sysconfig.get_path("purelib") + "/guarddog/analyzer/metadata/resources", "/var/cache/prguard/guarddog", dirs_exist_ok=True)' \
+    && rm -rf /var/lib/apt/lists/*
+ENV GUARDDOG_EXECUTABLE=/opt/guarddog/bin/guarddog
+ENV GUARDDOG_TOP_PACKAGES_CACHE_LOCATION=/var/cache/prguard/guarddog
+RUN gradle test integrationTestClasses --no-daemon
+CMD ["gradle", "guarddogIntegrationTest", "--no-daemon"]
+
+FROM eclipse-temurin:21-jre-jammy
+ARG GUARDDOG_VERSION=3.2.0
+RUN apt-get update && apt-get install -y --no-install-recommends git python3 python3-venv \
+    && python3 -m venv /opt/guarddog \
+    && /opt/guarddog/bin/pip install --no-cache-dir "guarddog==${GUARDDOG_VERSION}" \
+    && /opt/guarddog/bin/python -c 'import shutil, sysconfig; shutil.copytree(sysconfig.get_path("purelib") + "/guarddog/analyzer/metadata/resources", "/var/cache/prguard/guarddog", dirs_exist_ok=True)' \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system app && useradd --system --create-home --gid app app \
+    && chown -R app:app /var/cache/prguard/guarddog
+ENV GUARDDOG_EXECUTABLE=/opt/guarddog/bin/guarddog
+ENV GUARDDOG_TOP_PACKAGES_CACHE_LOCATION=/var/cache/prguard/guarddog
+WORKDIR /app
+COPY --from=build /workspace/build/libs/app.jar app.jar
+USER app
+EXPOSE 8080
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]

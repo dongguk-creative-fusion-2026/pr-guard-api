@@ -37,6 +37,7 @@ public final class AnalysisContext {
     private GitHistory history = GitHistory.empty();
     private List<BlameLine> blame = List.of();
     private Map<String, MethodAstDiff> astDiffs = Map.of();
+    private GuardDogReport guarddog;
     private RuleMap baseRules = RuleMap.EMPTY;
     private RuleMap latestRules;
     private GraphImpact graphImpact = GraphImpact.empty();
@@ -113,6 +114,10 @@ public final class AnalysisContext {
     public List<String> notes() {
         return notes;
     }
+
+    public GuardDogReport guarddog() { return guarddog; }
+
+    void setGuarddog(GuardDogReport report) { this.guarddog = report; }
 
     /**
      * key 마다 한 번만 계산한다. 다른 검사기가 계산 중이면 끝날 때까지 기다렸다가 같은 결과를 받는다.

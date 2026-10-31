@@ -19,7 +19,21 @@ public record ContextSummary(
         List<BlameLine> blame,
         List<String> notes,
         long elapsedMs,
-        GraphImpact graphImpact) {
+        GraphImpact graphImpact,
+        GuardDogReport guarddog) {
+
+    /** Compatibility for callers that do not run dependency scanning. Historical JSON has no guarddog field. */
+    public ContextSummary(String baseSha, String headSha, IndexStats baseIndex, IndexStats headIndex,
+                          List<FileChange> files, List<ChangedMethodView> changedMethods, List<FileHistory> history,
+                          int historyCommits, List<BlameLine> blame, List<String> notes, long elapsedMs) {
+        this(baseSha, headSha, baseIndex, headIndex, files, changedMethods, history, historyCommits, blame, notes, elapsedMs, null, null);
+    }
+
+    public ContextSummary(String baseSha, String headSha, IndexStats baseIndex, IndexStats headIndex,
+                          List<FileChange> files, List<ChangedMethodView> changedMethods, List<FileHistory> history,
+                          int historyCommits, List<BlameLine> blame, List<String> notes, long elapsedMs, GraphImpact graphImpact) {
+        this(baseSha, headSha, baseIndex, headIndex, files, changedMethods, history, historyCommits, blame, notes, elapsedMs, graphImpact, null);
+    }
 
     /**
      * PR 에서 바뀐 파일 (화면에서 레포 그래프 위에 영향 범위를 그릴 때 쓴다).
