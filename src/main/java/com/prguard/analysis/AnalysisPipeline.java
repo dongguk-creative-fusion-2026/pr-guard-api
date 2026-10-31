@@ -24,6 +24,7 @@ import com.prguard.graph.CallGraph;
 import com.prguard.graph.CallGraphService;
 import com.prguard.review.Reviewer;
 import com.prguard.review.StatsOnlyReviewer;
+import com.prguard.sonar.SonarService;
 import com.prguard.workspace.Checkout;
 import com.prguard.workspace.RepoWorkspace;
 import java.nio.file.Path;
@@ -77,13 +78,14 @@ public class AnalysisPipeline {
     private final EvidenceService evidence;
     private final FindingGrounder grounder;
     private final TestSelectionService selector;
+    private final SonarService sonar;
     private final CallGraphService callGraphs;
 
     public AnalysisPipeline(RepoWorkspace workspace, JavaIndexer indexer, GitHistoryLoader historyLoader,
                             List<Analyzer> analyzers, Reviewer reviewer, VerdictPolicy verdictPolicy,
                             AnalysisProperties props, @Qualifier("analysisExecutor") Executor executor,
                             TestRunService testRuns, EvidenceService evidence, FindingGrounder grounder,
-                            TestSelectionService selector, CallGraphService callGraphs) {
+                            TestSelectionService selector, SonarService sonar, CallGraphService callGraphs) {
         this.workspace = workspace;
         this.indexer = indexer;
         this.historyLoader = historyLoader;
@@ -96,6 +98,7 @@ public class AnalysisPipeline {
         this.evidence = evidence;
         this.grounder = grounder;
         this.selector = selector;
+        this.sonar = sonar;
         this.callGraphs = callGraphs;
     }
 
@@ -139,6 +142,8 @@ public class AnalysisPipeline {
         // 돌릴 테스트. 러너는 먼저 뜨고, 인덱스가 끝나면 고른다
         CompletableFuture<TestSelection> selection = new CompletableFuture<>();
         CompletableFuture<Void> planning = CompletableFuture.completedFuture(null);
+        // SonarCloud 는 head 러너가 테스트 뒤에 스캔한다. 러너를 띄우기 전에 프로젝트와 설정을 준비한다
+        boolean sonarPlanned = false;
         try {
             checkout = prepare(ctx, repoKb, sink);
             // 실행 검증(base · head 테스트)은 오래 걸리고 다른 분석 결과를 쓰지 않으므로 소스가 준비되면 바로 시작한다
@@ -150,6 +155,7 @@ public class AnalysisPipeline {
                 testRuns.skipAll(sink, "소스가 없어 건너뜀");
             } else {
                 Checkout source = checkout;
+                sonarPlanned = sonar.register(pull, sink);
                 execution = CompletableFuture.supplyAsync(() -> testRuns.verify(reviewId, pull, source, sink, plan, selection),
                         executor);
             }
@@ -173,6 +179,10 @@ public class AnalysisPipeline {
             // GitNexus 그래프는 미리 만들어 둔 것이라 소스를 받지 못해도 patch 만으로 따라갈 수 있다
             graphImpact(ctx, projectId, sink);
 
+            if (!sonarPlanned && (!exec || checkout == null)) {
+                sink.skipped(Stage.EXEC_SONAR, "실행 검증이 돌지 않아 건너뜀 (head 러너에서 스캔)");
+            }
+
             // 검사기(분류별)와 LLM 리뷰는 서로의 결과를 쓰지 않으므로 동시에 돌린다
             Map<Stage, List<Analyzer>> groups = new EnumMap<>(Stage.class);
             for (Analyzer analyzer : analyzers) {
@@ -194,6 +204,9 @@ public class AnalysisPipeline {
             LlmOutcome outcome = llm.join();
             findings.addAll(outcome.findings());
             findings.addAll(execution.join());
+            if (sonarPlanned) {
+                findings.addAll(sonar.collect(pull, ctx, sink));
+            }
             planning.join();
             findings.sort(Comparator.comparing(Finding::severity).thenComparing(f -> f.file() == null ? "" : f.file()));
             List<Finding> grounded = ground(findings, ctx, sink, exec);
@@ -212,6 +225,9 @@ public class AnalysisPipeline {
         } finally {
             plan.complete(EvidencePlan.EMPTY);
             selection.complete(TestSelection.off("선택 없음"));
+            if (sonarPlanned) {
+                sonar.forget(pull.headSha());
+            }
             if (checkout != null) {
                 workspace.release(checkout);
             }

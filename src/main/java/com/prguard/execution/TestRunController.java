@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.prguard.common.ApiException;
 import com.prguard.execution.JUnitReportParser.TestCase;
+import com.prguard.sonar.SonarService;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -42,11 +43,13 @@ public class TestRunController {
     private final TestRunRepository runs;
     private final ObjectMapper mapper;
     private final TestRunService service;
+    private final SonarService sonar;
 
-    public TestRunController(TestRunRepository runs, ObjectMapper mapper, TestRunService service) {
+    public TestRunController(TestRunRepository runs, ObjectMapper mapper, TestRunService service, SonarService sonar) {
         this.runs = runs;
         this.mapper = mapper;
         this.service = service;
+        this.sonar = sonar;
     }
 
     /** 이 서버에 실행 환경(쿠버네티스 · docker)이 연결돼 있나. 화면이 프로젝트 설정의 실행 검증 스위치 옆에 보여 준다 */
@@ -167,6 +170,42 @@ public class TestRunController {
         return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body.toString());
     }
 
+    /**
+     * head 러너가 빌드 전에 받아 가는 SonarCloud 분석 설정. 204 = 하지 않음(base · 꺼짐),
+     * 200 = "키 TAB 값" 줄들 (host · organization · projectKey · pullrequest.key · pullrequest.branch · pullrequest.base).
+     * 토큰은 싣지 않는다: 테스트가 끝난 뒤 {@code /sonar/token} 으로 한 번만 받는다
+     */
+    @GetMapping("/api/test-runs/{id}/sonar")
+    public ResponseEntity<String> sonarPlan(@PathVariable long id, @RequestHeader("X-Run-Token") String token) {
+        TestRun run = authorize(id, token);
+        if (!"HEAD".equals(run.side())) {
+            return ResponseEntity.noContent().build();
+        }
+        return sonar.plan(run.sha())
+                .map(p -> ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(
+                        line("host", p.host()) + line("organization", p.organization()) + line("projectKey", p.projectKey())
+                                + line("pullrequest.key", String.valueOf(p.pullRequest()))
+                                + line("pullrequest.branch", p.branch()) + line("pullrequest.base", p.base())))
+                .orElse(ResponseEntity.noContent().build());
+    }
+
+    /** 스캔 직전에 한 번만 주는 SonarCloud 토큰. 이미 가져갔거나 설정이 없으면 204 */
+    @GetMapping("/api/test-runs/{id}/sonar/token")
+    public ResponseEntity<String> sonarToken(@PathVariable long id, @RequestHeader("X-Run-Token") String token) {
+        TestRun run = authorize(id, token);
+        if (!"HEAD".equals(run.side())) {
+            return ResponseEntity.noContent().build();
+        }
+        return sonar.takeToken(run.sha())
+                .map(t -> ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(t))
+                .orElse(ResponseEntity.noContent().build());
+    }
+
+    /** 값에 줄바꿈 · 탭이 섞이면 러너가 줄을 잘못 읽는다 */
+    private static String line(String key, String value) {
+        return key + "\t" + (value == null ? "" : value.replaceAll("[\\t\\r\\n]", " ")) + "\n";
+    }
+
     private MutationPlan planOf(TestRun run) {
         if (run.selection() == null) {
             return null;
@@ -200,6 +239,8 @@ public class TestRunController {
      * @param probe    관측 테스트 기록 (probe.jsonl)
      * @param mutations 변경분 변이 테스트 결과 (PIT mutations.xml, head 만)
      * @param rerun    실패한 테스트 클래스만 다시 돌린 JUnit 보고서 (flaky 판별)
+     * @param sonarTask  SonarCloud 에 올린 분석의 처리 작업 id (head 만)
+     * @param sonarError SonarCloud 스캔을 하지 못했으면 그 이유
      */
     @PostMapping("/api/test-runs/{id}/report")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -212,9 +253,14 @@ public class TestRunController {
                        @RequestParam(value = "evidenceDropped", required = false) String evidenceDropped,
                        @RequestParam(value = "probe", required = false) List<MultipartFile> probe,
                        @RequestParam(value = "mutations", required = false) List<MultipartFile> mutations,
-                       @RequestParam(value = "rerun", required = false) List<MultipartFile> rerun)
+                       @RequestParam(value = "rerun", required = false) List<MultipartFile> rerun,
+                       @RequestParam(value = "sonarTask", required = false) String sonarTask,
+                       @RequestParam(value = "sonarError", required = false) String sonarError)
             throws IOException {
         TestRun run = authorize(id, token);
+        if ("HEAD".equals(run.side()) && (sonarTask != null || sonarError != null)) {
+            sonar.reported(run.sha(), limit(sonarTask, 100), limit(sonarError, 300));
+        }
         MutationPlan plan = planOf(run);
         if (mutations != null && !mutations.isEmpty() && plan != null) {
             List<InputStream> xmls = new ArrayList<>();

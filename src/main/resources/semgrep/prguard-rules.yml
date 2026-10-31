@@ -1,0 +1,78 @@
+# PR Guard 가 들고 있는 Semgrep 규칙: 지원이 끝났거나 제거된 API → 새 API (마이그레이션).
+# fix 가 있으면 리뷰에 "수정 제안" 으로 붙는다. 레지스트리 규칙(prguard.semgrep.configs)과 함께 돈다.
+rules:
+  - id: prguard-boxed-constructor
+    languages: [java]
+    severity: WARNING
+    message: >-
+      `new $T(...)` 박싱 생성자는 Java 9 부터 deprecated 이고 제거 예정이다. 캐시를 쓰는 `$T.valueOf(...)` 로 바꾼다.
+    metadata:
+      category: migration
+    patterns:
+      - pattern: new $T($X)
+      - metavariable-regex:
+          metavariable: $T
+          regex: ^(java\.lang\.)?(Integer|Long|Short|Byte|Double|Float|Boolean|Character)$
+    fix: $T.valueOf($X)
+
+  - id: prguard-class-newinstance
+    languages: [java]
+    severity: WARNING
+    message: >-
+      `Class.newInstance()` 는 Java 9 부터 deprecated 이다 (생성자가 던진 검사 예외를 그대로 흘린다).
+      `getDeclaredConstructor().newInstance()` 로 바꾼다.
+    metadata:
+      category: migration
+    # Constructor.newInstance() 는 deprecated 가 아니라서 Class 로 확인된 것만
+    patterns:
+      - pattern: $C.newInstance()
+      - pattern-either:
+          - pattern: (Class<$T> $X).newInstance()
+          - pattern: (Class $X).newInstance()
+          - pattern: $T.class.newInstance()
+          - pattern: Class.forName($N).newInstance()
+    fix: $C.getDeclaredConstructor().newInstance()
+
+  - id: prguard-url-constructor
+    languages: [java]
+    severity: INFO
+    message: >-
+      `new URL(String)` 은 Java 20 부터 deprecated 이다. `URI.create(...).toURL()` 로 바꾼다 (java.net.URI import 필요).
+    metadata:
+      category: migration
+    pattern-either:
+      - pattern: new URL($S)
+      - pattern: new java.net.URL($S)
+    fix: URI.create($S).toURL()
+
+  - id: prguard-javax-to-jakarta
+    languages: [java]
+    severity: INFO
+    message: >-
+      Spring Boot 3 (Jakarta EE 9+) 에서는 javax 대신 jakarta 패키지를 쓴다. Boot 2 프로젝트라면 무시해도 된다.
+    metadata:
+      category: migration
+    # import 줄의 "javax" 만 잡아 jakarta 로 바꾼다 (fix-regex 는 --json 에 수정 내용이 나오지 않는다)
+    pattern-regex: (?m)(?:(?<=^import )|(?<=^import static ))javax(?=\.(?:servlet|persistence|validation|transaction|annotation\.(?:PostConstruct|PreDestroy))\b)
+    fix: jakarta
+
+  - id: prguard-websecurityconfigureradapter
+    languages: [java]
+    severity: WARNING
+    message: >-
+      `WebSecurityConfigurerAdapter` 는 Spring Security 5.7 에서 deprecated, 6.0 에서 제거됐다.
+      `SecurityFilterChain` 을 돌려주는 @Bean 으로 옮긴다.
+    metadata:
+      category: migration
+    pattern: |
+      class $C extends WebSecurityConfigurerAdapter { ... }
+
+  - id: prguard-new-buffer
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      `new Buffer()` 는 Node.js 에서 deprecated 이다 (DEP0005, 초기화되지 않은 메모리 노출). `Buffer.from` / `Buffer.alloc` 으로 바꾼다.
+    metadata:
+      category: migration
+    pattern: new Buffer($X)
+    fix: Buffer.from($X)

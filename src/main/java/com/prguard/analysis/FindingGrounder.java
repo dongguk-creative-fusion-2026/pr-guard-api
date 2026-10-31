@@ -125,7 +125,9 @@ public class FindingGrounder {
     private static boolean indexRule(Finding f) {
         String rule = f.ruleId();
         return Finding.TOOL.equals(f.source())
-                && (rule.startsWith("AST_") || rule.equals("UNRESOLVED_METHOD") || rule.equals("ARITY_MISMATCH"));
+                && (rule.startsWith("AST_") || rule.equals("UNRESOLVED_METHOD") || rule.equals("ARITY_MISMATCH")
+                        // 외부 정적 분석기: 같은 곳을 짚은 AI 지적을 확인해 준다
+                        || rule.equals("SEMGREP") || rule.equals("SONAR_ISSUE"));
     }
 
     private static boolean execRule(Finding f) {
