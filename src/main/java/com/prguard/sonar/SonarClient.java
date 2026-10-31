@@ -2,6 +2,7 @@ package com.prguard.sonar;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
+import java.util.function.Function;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -17,6 +18,8 @@ public class SonarClient {
     private static final int PAGE_SIZE = 500;
 
     private final RestClient http;
+    /** 토큰 없이 부르는 클라이언트. 우리 프로젝트는 public 이라 이슈 · 지표 · Gate 는 누구나 읽을 수 있다 */
+    private final RestClient anonymous;
     private final SonarProperties props;
 
     public SonarClient(RestClient.Builder builder, SonarProperties props) {
@@ -26,10 +29,23 @@ public class SonarClient {
                 .defaultStatusHandler(HttpStatusCode::isError, (req, res) -> {
                     throw new SonarException(req.getMethod() + " " + req.getURI().getPath() + " -> " + res.getStatusCode().value());
                 });
+        this.anonymous = b.clone().build();
         if (props.token() != null && !props.token().isBlank()) {
             b.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + props.token());
         }
         this.http = b.build();
+    }
+
+    /**
+     * 결과 읽기. Scoped Organization Token 은 분석 · 프로젝트 만들기용이라 조회 API 를 거절할 수 있다 (issues/search -> 400).
+     * 토큰으로 실패하면 토큰 없이 다시 읽는다 (public 프로젝트).
+     */
+    private JsonNode read(Function<RestClient, JsonNode> call) {
+        try {
+            return call.apply(http);
+        } catch (SonarException e) {
+            return call.apply(anonymous);
+        }
     }
 
     /** 조직에 프로젝트가 없으면 public 으로 만든다 (무료 플랜은 public 프로젝트만 무제한) */
@@ -59,22 +75,22 @@ public class SonarClient {
 
     /** PR 분석에서 열린 이슈 (한 페이지) */
     public JsonNode issues(String key, int pr) {
-        return http.get()
+        return read(c -> c.get()
                 .uri("/api/issues/search?componentKeys={k}&pullRequest={pr}&resolved=false&ps={n}", key, pr, PAGE_SIZE)
-                .retrieve().body(JsonNode.class);
+                .retrieve().body(JsonNode.class));
     }
 
     public JsonNode measures(String key, int pr, List<String> metrics) {
-        return http.get()
+        return read(c -> c.get()
                 .uri("/api/measures/component?component={k}&pullRequest={pr}&metricKeys={m}", key, pr,
                         String.join(",", metrics))
-                .retrieve().body(JsonNode.class);
+                .retrieve().body(JsonNode.class));
     }
 
     public JsonNode qualityGate(String key, int pr) {
-        JsonNode body = http.get()
+        JsonNode body = read(c -> c.get()
                 .uri("/api/qualitygates/project_status?projectKey={k}&pullRequest={pr}", key, pr)
-                .retrieve().body(JsonNode.class);
+                .retrieve().body(JsonNode.class));
         return body == null ? null : body.path("projectStatus");
     }
 }
