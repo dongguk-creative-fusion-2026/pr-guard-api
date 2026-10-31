@@ -47,6 +47,7 @@ public final class RuleExtractor {
     private static final int MIN_CONVENTION_TOTAL = 2;
     private static final int MAX_MEMBERS = 60;
 
+    private static final Pattern NOT_NULLABLE = Pattern.compile("(?:nullable|optional)\\s*=\\s*false");
     private static final Pattern NEW_EXCEPTION = Pattern.compile("\\bnew\\s+([A-Z]\\w*(?:Exception|Error))\\s*\\(");
     private static final Pattern RETURNS_NULL = Pattern.compile("\\breturn\\s+null\\s*;|\\.orElse\\(\\s*null\\s*\\)");
     private static final Pattern ATOMIC = Pattern.compile("(?i)\\bset\\s+([\\w.]+)\\s*=\\s*\\1\\s*[+-]");
@@ -187,8 +188,7 @@ public final class RuleExtractor {
             String subject = t.fqn() + "." + name;
             String label = t.simpleName() + "." + name;
             List<String> parts = new ArrayList<>();
-            boolean notNull = a.matches(".*nullable\\s*=\\s*false.*") || a.contains("@NotNull") || a.contains("@NotBlank")
-                    || a.matches(".*optional\\s*=\\s*false.*");
+            boolean notNull = NOT_NULLABLE.matcher(a).find() || a.contains("@NotNull") || a.contains("@NotBlank");
             Matcher length = Pattern.compile("(?:length|max)\\s*=\\s*(\\d+)").matcher(a);
             String type = simpleType(field.getValue());
             if (notNull) {

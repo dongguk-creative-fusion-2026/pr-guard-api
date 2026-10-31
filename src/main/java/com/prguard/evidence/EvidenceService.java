@@ -34,7 +34,7 @@ public class EvidenceService {
     private static final int MAX_TYPE_CHARS = 8000;
     private static final int MAX_TEST_CHARS = 6000;
     private static final java.util.regex.Pattern BOOT_TEST_STARTER =
-            java.util.regex.Pattern.compile("spring-boot-starter(-[a-z0-9]+)*-test\\b");
+            java.util.regex.Pattern.compile("spring-boot-starter-(?:[a-z0-9-]*-)?test\\b");
 
     private final EvidenceGenerator generator;
     private final EvidenceProperties props;

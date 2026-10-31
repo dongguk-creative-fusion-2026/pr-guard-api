@@ -16,6 +16,7 @@ public class GitHistoryLoader {
     private static final char RECORD = 0x1e;
     private static final char FIELD = 0x1f;
     /** blame 은 라인 범위마다 git 을 한 번씩 부르므로 PR 당 범위 수를 제한한다. */
+    private static final java.util.regex.Pattern BLAME_HEADER = java.util.regex.Pattern.compile("[0-9a-f]{40} \\d+ \\d+");
     private static final int MAX_BLAME_RANGES = 30;
 
     private final GitRunner git;
@@ -83,7 +84,7 @@ public class GitHistoryLoader {
         long time = 0;
         String summary = "";
         for (String line : out.split("\n")) {
-            if (line.matches("^[0-9a-f]{40} \\d+ \\d+.*")) {
+            if (BLAME_HEADER.matcher(line).lookingAt()) {
                 String[] parts = line.split(" ");
                 sha = parts[0];
                 finalLine = Integer.parseInt(parts[2]);
