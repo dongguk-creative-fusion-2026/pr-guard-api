@@ -54,4 +54,22 @@ class ConflictEngineTest {
         assertThatThrownBy(() -> broken.analyze(Map.of("pulls", List.of())))
                 .hasMessageContaining("실행/보고서 오류");
     }
+    @Test void workspacePermissionsAreRestrictedBeforeWritingInput() throws Exception {
+        var directory = ConflictEngine.privateWorkspace();
+        try {
+            if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                assertThat(java.nio.file.Files.getPosixFilePermissions(directory))
+                        .isEqualTo(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+            } else {
+                var acl = java.nio.file.Files.getFileAttributeView(directory, java.nio.file.attribute.AclFileAttributeView.class);
+                assertThat(acl.getAcl()).hasSize(1);
+                assertThat(acl.getAcl().getFirst().principal()).isEqualTo(acl.getOwner());
+            }
+            java.nio.file.Files.writeString(directory.resolve("probe"), "private");
+            assertThat(java.nio.file.Files.readString(directory.resolve("probe"))).isEqualTo("private");
+            java.nio.file.Files.delete(directory.resolve("probe"));
+        } finally {
+            java.nio.file.Files.delete(directory);
+        }
+    }
 }

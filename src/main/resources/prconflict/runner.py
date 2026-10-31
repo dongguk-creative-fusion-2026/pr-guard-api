@@ -57,5 +57,6 @@ def analyze(data):
 
 
 if __name__ == '__main__':
-    data = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
-    Path(sys.argv[2]).write_text(json.dumps(analyze(data), ensure_ascii=False), encoding='utf-8')
+    workspace = Path(__file__).resolve().parent
+    data = json.loads((workspace / 'input.json').read_text(encoding='utf-8'))
+    (workspace / 'output.json').write_text(json.dumps(analyze(data), ensure_ascii=False), encoding='utf-8')

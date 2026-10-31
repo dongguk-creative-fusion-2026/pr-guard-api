@@ -105,6 +105,35 @@ prguard:
     worker-delay: PT10S
     # 워크플로 제한 시간(30분)보다 길게
     stale-after: PT40M
+  sonar:
+    # SonarCloud: 등록된 레포마다 우리 조직 아래 public 프로젝트를 만들고, head 러너가 테스트 뒤 sonar-scanner 로 PR 분석을 올린다.
+    # 이번 PR 이 추가한 줄의 이슈 · 새 코드 커버리지 · 중복률 · Quality Gate 를 리뷰에 싣는다. 실행 검증(EXEC_RUNNER)이 켜져 있어야 돈다
+    enabled: ${SONAR_ENABLED:false}
+    url: ${SONAR_URL:https://sonarcloud.io}
+    organization: ${SONAR_ORGANIZATION:}
+    # 조직 관리자 토큰 (프로젝트 만들기 · 분석 올리기). head 러너에는 테스트가 끝난 뒤 한 번만 건넨다
+    token: ${SONAR_TOKEN:}
+    project-prefix: prguard_
+    # 러너가 올린 분석을 SonarCloud 가 처리하기를 기다리는 시간
+    timeout: ${SONAR_TIMEOUT:PT5M}
+    # Quality Gate 실패를 남길 심각도 (기본 Sonar way 는 새 코드 커버리지 80% 를 요구해 자주 실패한다)
+    gate-severity: ${SONAR_GATE_SEVERITY:MINOR}
+    max-issues: 50
+  semgrep:
+    # 바뀐 파일을 base · head 에서 Semgrep 으로 한 번 검사해 이번 PR 이 추가한 줄의 결과만 남긴다.
+    # 보안 → C 노드, 버그 패턴 · 모범 사례 · 팀 규칙 · 마이그레이션 → D 노드.
+    # 실행 파일(semgrep)이 없으면 건너뛴다 (API 이미지에는 들어 있다)
+    enabled: ${SEMGREP_ENABLED:true}
+    binary: ${SEMGREP_BIN:semgrep}
+    # 규칙: 레지스트리 이름(p/...) 또는 규칙 파일 경로. 쉼표로 여러 개
+    # p/default = 보안 위주, p/r2c-best-practices = 버그 패턴 · 모범 사례 · 호환성
+    configs: ${SEMGREP_CONFIGS:p/default,p/r2c-best-practices}
+    # PR Guard 마이그레이션 규칙 (resources/semgrep/prguard-rules.yml, 수정 제안 포함)
+    bundled: ${SEMGREP_BUNDLED:true}
+    # 레포(base)의 .semgrep.yml · .semgrep.yaml · .semgrep/ 를 팀 규칙으로 함께 쓴다
+    repo-rules: ${SEMGREP_REPO_RULES:true}
+    timeout: ${SEMGREP_TIMEOUT:PT3M}
+    max-files: 200
   analysis:
     max-commits: 1000
     min-co-support: 3

@@ -4,6 +4,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -28,15 +34,14 @@ public class ConflictEngine {
         Path work = null;
         Process process = null;
         try {
-            work = Files.createTempDirectory("pr-conflicts-");
+            work = privateWorkspace();
             for (String name : List.of("runner.py", "pr_data.py", "conflict_detector.py")) {
                 try (var resource = new ClassPathResource("prconflict/" + name).getInputStream()) {
                     Files.copy(resource, work.resolve(name));
                 }
             }
             Files.writeString(work.resolve("input.json"), mapper.writeValueAsString(input));
-            var pb = new ProcessBuilder(props.python(), "-I", work.resolve("runner.py").toString(),
-                    work.resolve("input.json").toString(), work.resolve("output.json").toString())
+            var pb = new ProcessBuilder(props.python(), "-I", work.resolve("runner.py").toString())
                     .directory(work.toFile()).redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD);
             var env = pb.environment();
@@ -78,6 +83,29 @@ public class ConflictEngine {
                     });
                 } catch (IOException ignored) { }
             }
+        }
+    }
+
+    /** POSIX는 생성 시 0700, Windows는 민감한 입력을 쓰기 전에 소유자 전용 ACL을 적용한다. */
+    static Path privateWorkspace() throws IOException {
+        boolean posix = java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+        FileAttribute<?>[] attributes = posix
+                ? new FileAttribute<?>[] {PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))}
+                : new FileAttribute<?>[0];
+        Path directory = Files.createTempDirectory("pr-conflicts-", attributes);
+        try {
+            var acl = Files.getFileAttributeView(directory, AclFileAttributeView.class);
+            if (!posix) {
+                if (acl == null) throw new IOException("Private workspace permissions unavailable");
+                acl.setAcl(List.of(AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(acl.getOwner())
+                        .setFlags(java.nio.file.attribute.AclEntryFlag.FILE_INHERIT,
+                                java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT)
+                        .setPermissions(java.util.EnumSet.allOf(AclEntryPermission.class)).build()));
+            }
+            return directory;
+        } catch (IOException | RuntimeException e) {
+            Files.deleteIfExists(directory);
+            throw e;
         }
     }
 }
