@@ -124,8 +124,10 @@ public final class ContractContext {
         Source baseSrc = new Source(checkout.get().baseDir());
         Source headSrc = new Source(checkout.get().headDir());
 
+        // 생성자는 대부분 의존성 주입 배선이라 뺀다
         List<ChangedMethod> candidates = ctx.changedMethods().stream()
                 .filter(m -> !m.test() && m.kind() == ChangedMethod.Kind.MODIFIED && m.id() != null && m.baseId() != null)
+                .filter(m -> !"<init>".equals(m.name()))
                 .filter(m -> m.bodyChanged() || m.signatureChanged())
                 // 부르던 메서드가 바뀐 것(기존 코드에 기대던 것) 먼저, 그다음 호출부가 많은 것
                 .sorted(Comparator.comparing((ChangedMethod m) -> droppedCallees(base, head, m).isEmpty())
@@ -176,7 +178,7 @@ public final class ContractContext {
                 .filter(id -> !baseCallees.contains(id))
                 .map(head::method)
                 .flatMap(Optional::stream)
-                .filter(c -> !c.test() && !c.implicit())
+                .filter(c -> !c.test() && !c.implicit() && !c.constructor())
                 .limit(MAX_CALLEES)
                 .forEach(c -> result.add(snippet(counter, Role.NEW_CALLEE, "head", c.id(), c.file(), c.startLine(),
                         c.endLine(), headSrc.code(c.file(), c.startLine(), c.endLine()))));
@@ -216,7 +218,7 @@ public final class ContractContext {
         return result.stream().filter(s -> !s.code().isBlank()).toList();
     }
 
-    /** base 버전은 부르는데 head 버전은 부르지 않는 레포 안 메서드. */
+    /** base 버전은 부르는데 head 버전은 부르지 않는 레포 안 메서드. 생성자는 뺀다 (예외 생성은 LOST_EXCEPTION 으로 따로 본다) */
     static List<MethodInfo> droppedCallees(RepoIndex base, RepoIndex head, ChangedMethod m) {
         if (m.id() == null || m.baseId() == null) {
             return List.of();
@@ -226,7 +228,7 @@ public final class ContractContext {
                 .filter(id -> !now.contains(id))
                 .map(base::method)
                 .flatMap(Optional::stream)
-                .filter(c -> !c.test() && !c.implicit())
+                .filter(c -> !c.test() && !c.implicit() && !c.constructor())
                 .toList();
     }
 
