@@ -64,6 +64,33 @@ public class RuleMapService {
         return new Maps(base, latest, tip);
     }
 
+    /**
+     * 화면용: 기본 브랜치 끝 커밋의 규칙 지도와, 그 전에 만든 지도 대비 바뀐 규칙.
+     *
+     * @param previous 이 커밋 전에 가장 최근에 만든 지도. 없으면 null
+     */
+    public record BranchMap(String branch, RuleMap map, RuleMap previous) {
+    }
+
+    public BranchMap forBranch(RepoRef repo, long repoKb, String branch) {
+        String tip = workspace.fetchBranchTip(repo, repoKb, branch);
+        RuleMap map = getOrBuild(repo, tip, () -> {
+            Snapshot snapshot = workspace.checkoutBranch(repo, repoKb, branch);
+            try {
+                return RuleExtractor.extract(indexer.index(snapshot.dir()), snapshot.dir());
+            } finally {
+                workspace.release(snapshot);
+            }
+        });
+        RuleMap previous = null;
+        try {
+            previous = repository.findPrevious(repo.fullName(), tip).orElse(null);
+        } catch (RuntimeException e) {
+            log.warn("지난 규칙 지도 조회 실패 {}: {}", repo.fullName(), e.getMessage());
+        }
+        return new BranchMap(branch, map, previous);
+    }
+
     private RuleMap getOrBuild(RepoRef repo, String sha, Supplier<java.util.List<Rule>> extract) {
         String key = repo.fullName() + "@" + sha;
         // 레포마다 하나씩: 같은 커밋을 두 리뷰가 동시에 만들지 않고, 뒤에 온 쪽은 저장된 것을 쓴다

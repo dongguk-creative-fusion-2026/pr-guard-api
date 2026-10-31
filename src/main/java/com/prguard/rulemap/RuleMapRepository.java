@@ -35,6 +35,21 @@ public class RuleMapRepository {
                 .map(json -> new RuleMap(commitSha, read(json), true));
     }
 
+    /** 이 커밋이 아닌, 가장 최근에 만든 지도 (화면의 "지난 지도 대비 바뀐 규칙") */
+    public Optional<RuleMap> findPrevious(String repo, String exceptSha) {
+        return jdbc.sql("""
+                        SELECT commit_sha, rules::text AS rules FROM rule_maps
+                         WHERE repo = :repo AND commit_sha <> :sha AND version = :version
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                        """)
+                .param("repo", repo)
+                .param("sha", exceptSha)
+                .param("version", RuleExtractor.VERSION)
+                .query((rs, n) -> new RuleMap(rs.getString("commit_sha"), read(rs.getString("rules")), true))
+                .optional();
+    }
+
     public void save(String repo, RuleMap map) {
         try {
             jdbc.sql("""

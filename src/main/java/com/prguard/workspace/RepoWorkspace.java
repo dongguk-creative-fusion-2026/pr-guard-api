@@ -94,6 +94,25 @@ public class RepoWorkspace {
         }
     }
 
+    /** 브랜치를 받아(fetch) 끝 커밋만 알려 준다. 소스는 꺼내지 않는다. */
+    public String fetchBranchTip(RepoRef repo, long repoKb, String branch) {
+        if (repoKb > props.maxRepoKb()) {
+            throw new GitException("레포가 너무 큽니다 (" + repoKb + "KB > " + props.maxRepoKb() + "KB)");
+        }
+        ReentrantLock lock = locks.computeIfAbsent(key(repo), k -> new ReentrantLock());
+        lock.lock();
+        try {
+            Path mirror = ensureMirror(repo);
+            git.run(mirror, "fetch", "--quiet", "--no-tags", "origin",
+                    "+refs/heads/" + branch + ":refs/remotes/origin/" + branch);
+            return git.run(mirror, "rev-parse", "refs/remotes/origin/" + branch + "^{commit}").strip();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** PR 을 꺼낼 때 받아 둔 base 브랜치 끝 커밋 (지금의 기본 브랜치). */
     public String branchTip(Checkout checkout, String baseRef) {
         return git.run(checkout.mirror(), "rev-parse", "refs/remotes/origin/" + baseRef + "^{commit}").strip();
