@@ -208,6 +208,7 @@ fi
 
 # SonarCloud 분석 설정 (head 만). 204 = 하지 않음, 200 = "키 TAB 값" 줄들. 토큰은 PR 코드가 다 돈 뒤에 따로 받는다
 SONAR_PROPS=()
+SONAR_BASE=
 SONAR_HOME="${SONAR_HOME:-/opt/prguard/sonar-scanner}"
 JACOCO_DIR="${JACOCO_DIR:-/opt/prguard/jacoco}"
 status=$(curl --silent --max-time 10 -o "$WORK/sonar.txt" -w '%{http_code}' -H "X-Run-Token: $RUN_TOKEN" \
@@ -216,7 +217,11 @@ if [ "$status" = 200 ]; then
   while IFS=$'\t' read -r key value || [ -n "$key" ]; do
     case "$key" in
       host) SONAR_PROPS+=("-Dsonar.host.url=$value") ;;
-      organization|projectKey|pullrequest.key|pullrequest.branch|pullrequest.base) SONAR_PROPS+=("-Dsonar.$key=$value") ;;
+      organization|projectKey|pullrequest.key|pullrequest.branch) SONAR_PROPS+=("-Dsonar.$key=$value") ;;
+      pullrequest.base)
+        SONAR_PROPS+=("-Dsonar.$key=$value")
+        git check-ref-format --branch "$value" >/dev/null 2>&1 && SONAR_BASE="$value"
+        ;;
     esac
   done < "$WORK/sonar.txt"
   echo "SonarCloud 분석 예정: ${SONAR_PROPS[*]}" >>"$LOG"
@@ -433,6 +438,12 @@ sonar_scan() {
   if [ -z "$token" ]; then
     SONAR_ERROR="SonarCloud 토큰을 받지 못함 (이미 사용됨)"
     return 0
+  fi
+  # PR 이 바꾼 줄만 새 코드로 보려면 base 브랜치와 공통 조상이 있어야 한다 (shallow clone 이면 레포 전체가 새 코드가 된다)
+  if [ -n "${SONAR_BASE:-}" ]; then
+    git fetch -q --deepen 200 origin "$SHA" >>"$LOG" 2>&1 || true
+    git fetch -q --depth 200 origin "+refs/heads/$SONAR_BASE:refs/remotes/origin/$SONAR_BASE" >>"$LOG" 2>&1 \
+      || echo "SonarCloud: base 브랜치를 받지 못해 바뀐 줄을 가리지 못할 수 있음" >>"$LOG"
   fi
   progress sonar "SonarCloud 스캔 중"
   rm -rf .scannerwork
