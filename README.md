@@ -15,7 +15,7 @@ POST /api/projects {url}
 
 GraphWorker (10초마다) — PENDING 그래프 하나를 집어서
   └ GitHub Actions 워크플로(.github/workflows/repo-graph.yml) 실행 → RUNNING
-     └ 워크플로: 기본 브랜치 clone → GitNexus 인덱싱 (gitnexus/export.mjs) → 파일 단위 그래프를
+     └ 워크플로: 기본 브랜치 clone → GitNexus 인덱싱 (gitnexus/export.mjs) → 파일 단위 그래프와 리뷰용 호출 그래프(impact)를
         POST /api/projects/{id}/graph/result 로 보냄 (API 는 runId 로 우리 워크플로 실행인지 GitHub 에 확인)
   (GitNexus 가 메모리를 1GB 가까이 써서 Railway 컨테이너 대신 Actions 에서 돌린다. GRAPH_RUNNER=local 이면 이 서버에서 직접)
 
@@ -34,6 +34,10 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   ├ AnalysisPipeline
   │   ├ RepoWorkspace   레포 clone → base(merge-base) / head worktree
   │   ├ JavaIndexer     양쪽 소스 인덱스 (타입 · 메서드 · 어노테이션 · 호출 관계) → 바뀐 메서드
+  │   ├ GraphImpact     변경 영향: 미리 만든 GitNexus 호출 그래프(graph.impact)에서 바뀐 줄을 감싸는 함수를 찾고,
+  │   │                 그 함수를 부르는 함수를 3단계까지 따라간다. 언어를 가리지 않고 clone 이 실패해도 patch 만으로 돈다.
+  │   │                 1단계 Java 호출은 JavaIndexer 가 같은 호출을 찾았는지 표시하고, 결과는 LLM 구조 정보 · 단계 IMPACT ·
+  │   │                 분석 재료(graphImpact) · PR 요약의 "분석 정보"에 들어간다 (판정 규칙은 그대로)
   │   ├ GitHistoryLoader 최근 커밋 이력 · 동시 변경 통계 · 바뀐 라인의 blame
   │   ├ Analyzer 들     결정적 검사, 분류(A~D)별로 나란히 실행 (아래 "결정적 검사")
   │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달). 위 검사와 동시에 돈다

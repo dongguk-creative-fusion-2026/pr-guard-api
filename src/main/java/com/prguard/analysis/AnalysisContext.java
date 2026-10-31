@@ -31,6 +31,7 @@ public final class AnalysisContext {
     private GitHistory history = GitHistory.empty();
     private List<BlameLine> blame = List.of();
     private Map<String, MethodAstDiff> astDiffs = Map.of();
+    private GraphImpact graphImpact = GraphImpact.empty();
     // 검사기들이 동시에 남길 수 있다
     private final List<String> notes = Collections.synchronizedList(new ArrayList<>());
 
@@ -84,6 +85,11 @@ public final class AnalysisContext {
         return astDiffs;
     }
 
+    /** GitNexus 호출 그래프로 따라간 변경 영향. 그래프가 없으면 비어 있다 */
+    public GraphImpact graphImpact() {
+        return graphImpact;
+    }
+
     public List<String> notes() {
         return notes;
     }
@@ -109,6 +115,10 @@ public final class AnalysisContext {
 
     void setAstDiffs(Map<String, MethodAstDiff> astDiffs) {
         this.astDiffs = Map.copyOf(astDiffs);
+    }
+
+    void setGraphImpact(GraphImpact graphImpact) {
+        this.graphImpact = graphImpact;
     }
 
     void setHistory(GitHistory history, List<BlameLine> blame) {
