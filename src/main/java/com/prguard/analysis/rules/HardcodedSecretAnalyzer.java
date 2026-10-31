@@ -22,7 +22,7 @@ import org.springframework.stereotype.Component;
 public class HardcodedSecretAnalyzer implements Analyzer {
 
     private static final Pattern HUNK = Pattern.compile("^@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@");
-    private static final Pattern TEST_PATH = Pattern.compile("(^|/)(test|tests|__tests__|spec|fixtures?)/|Tests?\\.java$");
+    private static final Pattern TEST_PATH = Pattern.compile("(?:(?:^|/)(?:test|tests|__tests__|spec|fixtures?)/)|(?:Tests?\\.java$)");
 
     /** 형식만 봐도 실제 키인 것 */
     private static final List<KeyFormat> KEY_FORMATS = List.of(
@@ -33,13 +33,14 @@ public class HardcodedSecretAnalyzer implements Analyzer {
             new KeyFormat("Google API 키", Pattern.compile("\\bAIza[0-9A-Za-z_-]{35}\\b")),
             new KeyFormat("개인키", Pattern.compile("-----BEGIN ([A-Z]+ )?PRIVATE KEY-----")));
 
-    /** 코드: 비밀값 이름 = "문자열" */
-    private static final Pattern NAMED_LITERAL = Pattern.compile(
-            "(?i)\\b([A-Za-z0-9_]*(?:secret|token|password|passwd|pwd|api_?key|private_?key|credential)[A-Za-z0-9_]*)"
-                    + "\\s*[:=]\\s*\"([^\"\\s]{8,})\"");
-    /** 설정 파일: 비밀값 키: 값 */
-    private static final Pattern NAMED_SETTING = Pattern.compile(
-            "(?i)^\\s*([A-Za-z0-9_.-]*(?:secret|token|password|api-?key|private-?key|credential)[A-Za-z0-9_.-]*)\\s*[:=]\\s*\"?([^\"\\s#]{8,})");
+    /** 코드: 이름 = "문자열". 이름이 비밀값인지는 SECRET_NAME 으로 따로 본다 (한 정규식에 넣으면 백트래킹이 커진다) */
+    private static final Pattern NAMED_LITERAL = Pattern.compile("\\b([A-Za-z0-9_]++)\\s*+[:=]\\s*+\"([^\"\\s]{8,})\"");
+    private static final Pattern SECRET_NAME = Pattern.compile(
+            "(?i)secret|token|password|passwd|pwd|api_?key|private_?key|credential");
+    /** 설정 파일: 키: 값 */
+    private static final Pattern NAMED_SETTING = Pattern.compile("^\\s*+([A-Za-z0-9_.-]++)\\s*+[:=]\\s*+\"?([^\"\\s#]{8,})");
+    private static final Pattern SECRET_SETTING = Pattern.compile(
+            "(?i)secret|token|password|api-?key|private-?key|credential");
     private static final Pattern SETTING_FILE = Pattern.compile("\\.(ya?ml|properties|env)$|(^|/)\\.env(\\.|$)");
 
     private record KeyFormat(String label, Pattern pattern) {
@@ -89,7 +90,12 @@ public class HardcodedSecretAnalyzer implements Analyzer {
             }
         }
         Matcher m = (setting ? NAMED_SETTING : NAMED_LITERAL).matcher(text);
-        if (m.find() && looksSecret(m.group(2))) {
+        Pattern secretName = setting ? SECRET_SETTING : SECRET_NAME;
+        boolean found = false;
+        while (!found && m.find()) {
+            found = secretName.matcher(m.group(1)).find();
+        }
+        if (found && looksSecret(m.group(2))) {
             String name = m.group(1);
             return new Finding("HARDCODED_SECRET", Category.SECURITY, Severity.MAJOR, file, added.line(),
                     "비밀값이 하드코딩됨: " + name,

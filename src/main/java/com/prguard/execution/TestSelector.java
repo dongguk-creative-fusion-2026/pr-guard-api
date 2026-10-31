@@ -40,14 +40,15 @@ public final class TestSelector {
     private static final Set<String> TEST_ANNOTATIONS = Set.of("Test", "ParameterizedTest", "RepeatedTest",
             "TestFactory", "TestTemplate");
     /** 테스트 결과에 영향을 줄 수 없는 파일 */
-    private static final Pattern IGNORED = Pattern.compile(
-            "(?i)(^|/)(docs?|\\.github|\\.idea|\\.vscode)/.*"
-                    + "|.*\\.(md|markdown|txt|adoc|rst|png|jpe?g|gif|svg|ico|webp|css|scss|less)$"
-                    + "|(^|/)(license[^/]*|notice[^/]*|\\.gitignore|\\.gitattributes|\\.editorconfig)$"
-                    + "|.*/src/main/resources/static/.*|^src/main/resources/static/.*");
+    private static final Pattern IGNORED_DIR = Pattern.compile("(?i)/?(?:docs?|\\.github|\\.idea|\\.vscode)/.*");
+    private static final Pattern IGNORED_EXT = Pattern.compile(
+            "(?i)\\.(?:md|markdown|txt|adoc|rst|png|jpe?g|gif|svg|ico|webp|css|scss|less)$");
+    private static final Pattern IGNORED_NAME = Pattern.compile(
+            "(?i)/?(?:license[^/]*|notice[^/]*|\\.gitignore|\\.gitattributes|\\.editorconfig)");
+    private static final String STATIC = "src/main/resources/static/";
     /** 메서드 밖에 있어도 동작에 영향이 없는 줄 */
     private static final Pattern TRIVIAL_LINE = Pattern.compile(
-            "^\\s*($|//.*|/\\*.*|\\*.*|import\\s.*|package\\s.*|[{}();\\s]+$)");
+            "^\\s*(?:$|//.*|/\\*.*|\\*.*|import\\s.*|package\\s.*|[{}();\\s]+)$");
     private static final String MAIN = "src/main/java/";
     private static final String TEST = "src/test/java/";
     private static final int MAX_LISTED = 30;
@@ -84,7 +85,7 @@ public final class TestSelector {
         // 1. 파일: 영향 범위를 확정할 수 없는 변경과 이번 PR 이 바꾼 테스트
         for (ChangedFile f : in.files()) {
             String path = f.filename();
-            if (IGNORED.matcher(path).matches()) {
+            if (ignored(path)) {
                 continue;
             }
             if (!path.endsWith(".java")) {
@@ -374,5 +375,12 @@ public final class TestSelector {
 
     private static double round(double seconds) {
         return Math.round(seconds * 10) / 10.0;
+    }
+
+    /** 테스트 결과에 영향을 줄 수 없는 파일인지. 앞에 .* 를 붙인 정규식은 긴 경로에서 느려서 나눠 본다 */
+    static boolean ignored(String path) {
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        return IGNORED_DIR.matcher(path).matches() || IGNORED_EXT.matcher(path).find()
+                || IGNORED_NAME.matcher(path).matches() || lower.startsWith(STATIC) || lower.contains("/" + STATIC);
     }
 }

@@ -119,7 +119,7 @@ public final class ContractContext {
     }
 
     public Optional<Snippet> snippet(String ref) {
-        String key = ref == null ? "" : ref.strip().replaceAll("^\\[|]$", "");
+        String key = ref == null ? "" : ref.strip().replaceAll("(?:^\\[)|(?:]$)", "");
         return targets.stream().flatMap(t -> t.snippets().stream()).filter(s -> s.ref().equals(key)).findFirst();
     }
 

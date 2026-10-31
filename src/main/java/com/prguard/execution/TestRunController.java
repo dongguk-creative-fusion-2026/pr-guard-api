@@ -37,8 +37,8 @@ public class TestRunController {
     /** 결과에 남길 테스트 케이스 수 상한 (큰 레포에서 행이 너무 커지지 않게) */
     private static final int MAX_CASES = 5000;
     private static final int MAX_LOG = 20_000;
-    private static final java.util.regex.Pattern CLASS_NAME = java.util.regex.Pattern.compile(
-            "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$");
+    /** 패키지 · 클래스 이름의 한 칸. 점으로 나눠 칸마다 본다 (그룹을 반복하는 정규식은 긴 입력에서 스택이 넘친다) */
+    private static final java.util.regex.Pattern NAME_PART = java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
     private final TestRunRepository runs;
     private final ObjectMapper mapper;
@@ -141,7 +141,7 @@ public class TestRunController {
         for (JsonNode c : tree(runs.testFilter(id))) {
             String name = c.asText();
             // 러너가 빌드 도구 인자로 쓴다. 클래스 이름이 아닌 것은 넘기지 않는다
-            if (CLASS_NAME.matcher(name).matches()) {
+            if (isClassName(name)) {
                 body.append(name).append('\n');
             }
         }
@@ -163,9 +163,9 @@ public class TestRunController {
             return ResponseEntity.noContent().build();
         }
         StringBuilder body = new StringBuilder("timeout\t").append(plan.timeoutSeconds()).append('\n');
-        plan.classes().stream().filter(c -> CLASS_NAME.matcher(c).matches())
+        plan.classes().stream().filter(c -> isClassName(c))
                 .forEach(c -> body.append("class\t").append(c).append('\n'));
-        plan.tests().stream().filter(c -> CLASS_NAME.matcher(c).matches())
+        plan.tests().stream().filter(c -> isClassName(c))
                 .forEach(c -> body.append("test\t").append(c).append('\n'));
         return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body.toString());
     }
@@ -361,5 +361,14 @@ public class TestRunController {
             return null;
         }
         return text.length() > max ? text.substring(0, max) : text;
+    }
+
+    static boolean isClassName(String name) {
+        for (String part : name.split("\\.", -1)) {
+            if (!NAME_PART.matcher(part).matches()) {
+                return false;
+            }
+        }
+        return true;
     }
 }
