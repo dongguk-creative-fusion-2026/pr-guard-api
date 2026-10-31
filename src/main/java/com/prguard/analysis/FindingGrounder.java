@@ -136,6 +136,9 @@ public class FindingGrounder {
 
     private Layer index(Finding f, AnalysisContext ctx, Map<Finding, List<MethodInfo>> linked, List<Finding> all,
                         Sources sources) {
+        if (Finding.TOOL.equals(f.source()) && f.ruleId().equals("CROSS_PR_OVERLAP")) {
+            return layer(LayerId.INDEX, Mark.CONFIRMED, "PR Conflict Detector가 수정 영역 겹침 확인 (병합/실행 충돌 미검증)");
+        }
         if (indexRule(f)) {
             return layer(LayerId.INDEX, Mark.CONFIRMED, "정적 검사 " + f.ruleId() + " 가 찾음");
         }

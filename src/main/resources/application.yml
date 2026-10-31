@@ -114,5 +114,11 @@ prguard:
     # PR 코멘트의 "분석 과정 보기" 링크 대상 (pr-guard-web)
     web-url: ${WEB_URL:https://pr-guard-web.vercel.app}
   verdict:
+    # PR 간 겹침은 MINOR 이므로 단독으로 머지를 막지 않는다.
     # MAJOR 가 이 개수 이상이면 "수정 후 머지" (BLOCKER 는 1개만 있어도 "머지 비권장")
     major-threshold: 1
+  pr-conflicts:
+    enabled: ${PR_CONFLICT_ENABLED:true}
+    python: ${PR_CONFLICT_PYTHON:python3}
+    timeout: ${PR_CONFLICT_TIMEOUT:PT30S}
+    max-pulls: ${PR_CONFLICT_MAX_PULLS:30}
