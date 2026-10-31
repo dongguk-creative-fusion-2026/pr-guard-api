@@ -141,6 +141,9 @@ def main():
             time.sleep(2)
         assert run['status'] == ('DONE' if state['scenario'] == 'success' else 'FAILED'), run
         assert run['result']['status'] == ('no_counterexample' if state['scenario'] == 'success' else 'execution_error'), run
+        latest = api(route + '/invariant-runs/latest')['run']
+        assert latest['id'] == run['id'] and latest['status'] == run['status'], latest
+        assert latest['result'] == run['result'] and latest['createdAt'], latest
         print(json.dumps(run, ensure_ascii=False, indent=2))
         print('Actions API integration passed:', state['scenario'])
     finally:

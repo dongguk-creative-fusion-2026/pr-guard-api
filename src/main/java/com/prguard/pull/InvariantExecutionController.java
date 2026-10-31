@@ -19,4 +19,9 @@ public class InvariantExecutionController {
     public JsonNode get(@PathVariable long id, @PathVariable int number, @PathVariable UUID runId) {
         return execution.get(id, number, runId);
     }
+
+    @GetMapping("/api/projects/{id}/pulls/{number}/invariant-runs/latest")
+    public JsonNode latest(@PathVariable long id, @PathVariable int number) {
+        return execution.latest(id, number);
+    }
 }

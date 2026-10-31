@@ -34,6 +34,11 @@ public class InvariantRunRepository {
                 .param("run", run).param("id", project).param("number", number).query(String.class).optional().map(this::tree);
     }
 
+    public Optional<JsonNode> latest(long project, int number) {
+        return jdbc.sql("SELECT json_build_object('id',id,'status',status,'headSha',head_sha,'baseSha',base_sha,'runUrl',run_url,'result',result,'createdAt',created_at,'finishedAt',finished_at)::text FROM invariant_runs WHERE project_id=:id AND pr_number=:number ORDER BY created_at DESC, id DESC LIMIT 1")
+                .param("id", project).param("number", number).query(String.class).optional().map(this::tree);
+    }
+
     List<Active> active() {
         return jdbc.sql("SELECT id,head_sha,base_sha,workflow_repo,workflow_ref,workflow_run_id,created_at,completed_seen_at FROM invariant_runs WHERE status IN ('QUEUED','RUNNING')")
                 .query(Active.class).list();
