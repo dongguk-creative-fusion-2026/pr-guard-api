@@ -127,6 +127,12 @@ public class GitHubClient {
         return files;
     }
 
+    /** Paths at a specific commit; GitHub may truncate very large trees. */
+    public JsonNode getTree(RepoRef repo, String sha) {
+        return http.get().uri("/repos/{o}/{r}/git/trees/{sha}?recursive=1", repo.owner(), repo.name(), sha)
+                .retrieve().body(JsonNode.class);
+    }
+
     public GitHubComment createComment(RepoRef repo, int number, String body) {
         return http.post().uri("/repos/{o}/{r}/issues/{n}/comments", repo.owner(), repo.name(), number)
                 .body(new CommentBody(body))

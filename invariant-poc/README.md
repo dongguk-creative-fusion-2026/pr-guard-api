@@ -4,6 +4,8 @@
 
 ## 실행 흐름
 
+PR 상세 페이지의 **PR 코드에서 규칙 제안**을 누르면 변경 diff와 파일명 기준으로 관련된 기존 테스트를 선택해 OpenAI에 전달한다. 최대 30,000자와 테스트 5개로 제한하며, 파일별 잘림과 누락 가능성 및 분석 파일 목록을 화면에 표시한다. 테스트는 PR head의 파일이며 이름 기반 선택이므로 관련 테스트를 모두 찾지는 못한다. 후보는 사람이 검토해야 하며 자동으로 실행되지 않는다. 이 기능에는 OpenAI API 키가 필요하고 코드 일부가 API 제공자에게 전송된다.
+
 1. PR 화면에서 문장을 입력해 규칙 후보를 만든다. 기존 OpenAI API 설정을 재사용한다.
 2. 사용자가 조건을 확인하고 실행 버튼을 누르면 서버가 현재 PR의 head와 merge-base SHA를 고정한다.
 3. 서버가 `.github/workflows/invariant-check.yml`을 `workflow_dispatch`로 요청한다.
@@ -48,9 +50,11 @@ Hypothesis는 1~20자 영숫자 제목·내용을 최대 100개 탐색 예산으
 
 ## API
 
+- `POST /api/projects/{id}/pulls/{number}/invariant-suggestions`: PR head, 분석에 사용한 파일, 제한 여부와 검토용 후보를 반환한다. 수집 중 head가 변경되면 다시 요청해야 한다.
 - `POST /api/projects/{id}/pulls/{number}/invariant-settings/compile`: `{rules}`를 `{engine,candidates}`로 해석한다. 키가 없으면 지원 문장에 대한 기본 템플릿 해석임을 표시한다.
 - `POST /api/projects/{id}/pulls/{number}/invariant-runs`: 확인한 후보를 받아 실행 ID와 `QUEUED` 상태를 반환한다.
 - `GET /api/projects/{id}/pulls/{number}/invariant-runs/{runId}`: 상태·커밋·Actions 링크·결과를 반환한다.
+- `GET /api/projects/{id}/pulls/{number}/invariant-runs/latest`: 해당 PR의 가장 최근 실행을 `{run}`으로 반환한다. 기록이 없으면 `run`은 `null`이다. PR 화면은 새로고침 후에도 최근 결과를 표시하고 실행 중인 작업은 조회를 재개한다.
 
 결과 파일이 없거나 만료·취소·업로드 실패인 경우 실패로 처리한다. GitHub의 일시적 오류는 마감 시간까지 재시도한다. 재실행 차수가 바뀐 기존 Actions 실행을 재사용하지 않으며, 새 API 요청으로 검증을 다시 시작해야 한다.
 

@@ -80,6 +80,13 @@ public class InvariantExecutionService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "INVARIANT_RUN_NOT_FOUND", "실행 기록이 없습니다."));
     }
 
+    public JsonNode latest(long id, int number) {
+        projects.get(id);
+        var response = mapper.createObjectNode();
+        runs.latest(id, number).ifPresentOrElse(run -> response.set("run", run), () -> response.putNull("run"));
+        return response;
+    }
+
     @Scheduled(fixedDelayString = "${INVARIANT_POLL_INTERVAL:PT30S}", initialDelayString = "PT10S")
     public void collect() {
         // Existing jobs continue to be collected after new dispatches are disabled or the API restarts.
