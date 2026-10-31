@@ -4,7 +4,7 @@ package com.prguard.events;
  * 리뷰 파이프라인 단계. 화면의 그래프 노드와 1:1 로 대응한다.
  *
  * <pre>
- * COLLECT → CHECKOUT → INDEX_BASE ∥ INDEX_HEAD → METHOD_DIFF → HISTORY → RULE_MAP
+ * COLLECT → CHECKOUT → INDEX_BASE ∥ INDEX_HEAD → METHOD_DIFF → IMPACT → HISTORY → RULE_MAP
  *        → CHECK_A ∥ CHECK_B ∥ CHECK_C ∥ CHECK_D ∥ LLM ∥ LLM_CONFLICT → GROUND → VERDICT → PUBLISH → REVIEW
  *
  * 실행 검증 레인 (CHECKOUT 뒤에서 나란히 돌고 GROUND 에 합류):
@@ -12,6 +12,7 @@ package com.prguard.events;
  *               → EXEC_POD_HEAD → EXEC_TEST_HEAD ┴→ EXEC_DIFF → GROUND
  *   METHOD_DIFF → EXEC_EVIDENCE → EXEC_TEST_BASE · EXEC_TEST_HEAD (증거 테스트를 함께 돌린다)
  *   METHOD_DIFF → EXEC_SELECT → EXEC_TEST_BASE · EXEC_TEST_HEAD (영향 있는 테스트만 돌린다)
+ *   EXEC_TEST_HEAD → EXEC_SONAR → GROUND (head 러너가 테스트 뒤 SonarCloud 로 스캔)
  * </pre>
  */
 public enum Stage {
@@ -23,6 +24,8 @@ public enum Stage {
     INDEX_HEAD,
     /** base↔head 메서드 비교와 호출부 */
     METHOD_DIFF,
+    /** GitNexus 호출 그래프로 바뀐 함수를 부르는 함수를 여러 단계 따라간다 (언어 무관, 소스 없이도) */
+    IMPACT,
     /** git 동시 변경 통계와 blame */
     HISTORY,
     /** 규칙 지도: base 와 최신 기본 브랜치 커밋의 코드가 지키는 규칙 (커밋마다 한 번 만들어 저장) */
@@ -50,6 +53,8 @@ public enum Stage {
     EXEC_MUTATION,
     /** base 에서 통과하던 테스트가 head 에서 실패하는지 비교 */
     EXEC_DIFF,
+    /** head 러너가 테스트 뒤 SonarCloud 로 스캔 → 이슈 · 커버리지 · 중복률 · Quality Gate */
+    EXEC_SONAR,
     /** 지적마다 인덱스 · 이력 · 실행 · AI 층의 근거를 맞춰 보고, 인덱스와 어긋나는 AI 지적을 뺀다 */
     GROUND,
     VERDICT,

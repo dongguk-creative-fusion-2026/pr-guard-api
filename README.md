@@ -15,7 +15,7 @@ POST /api/projects {url}
 
 GraphWorker (10초마다) — PENDING 그래프 하나를 집어서
   └ GitHub Actions 워크플로(.github/workflows/repo-graph.yml) 실행 → RUNNING
-     └ 워크플로: 기본 브랜치 clone → GitNexus 인덱싱 (gitnexus/export.mjs) → 파일 단위 그래프를
+     └ 워크플로: 기본 브랜치 clone → GitNexus 인덱싱 (gitnexus/export.mjs) → 파일 단위 그래프와 리뷰용 호출 그래프(impact)를
         POST /api/projects/{id}/graph/result 로 보냄 (API 는 runId 로 우리 워크플로 실행인지 GitHub 에 확인)
   (GitNexus 가 메모리를 1GB 가까이 써서 Railway 컨테이너 대신 Actions 에서 돌린다. GRAPH_RUNNER=local 이면 이 서버에서 직접)
 
@@ -34,6 +34,10 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   ├ AnalysisPipeline
   │   ├ RepoWorkspace   레포 clone → base(merge-base) / head worktree
   │   ├ JavaIndexer     양쪽 소스 인덱스 (타입 · 메서드 · 어노테이션 · 호출 관계) → 바뀐 메서드
+  │   ├ GraphImpact     변경 영향: 미리 만든 GitNexus 호출 그래프(graph.impact)에서 바뀐 줄을 감싸는 함수를 찾고,
+  │   │                 그 함수를 부르는 함수를 3단계까지 따라간다. 언어를 가리지 않고 clone 이 실패해도 patch 만으로 돈다.
+  │   │                 1단계 Java 호출은 JavaIndexer 가 같은 호출을 찾았는지 표시하고, 결과는 LLM 구조 정보 · 단계 IMPACT ·
+  │   │                 분석 재료(graphImpact) · PR 요약의 "분석 정보"에 들어간다 (판정 규칙은 그대로)
   │   ├ GitHistoryLoader 최근 커밋 이력 · 동시 변경 통계 · 바뀐 라인의 blame
   │   ├ RuleMapService  규칙 지도: base 와 지금 기본 브랜치 커밋의 코드가 지키는 규칙 (커밋마다 한 번 만들어 저장, 아래 "규칙 지도")
   │   ├ Analyzer 들     결정적 검사, 분류(A~D)별로 나란히 실행 (아래 "결정적 검사")
@@ -147,13 +151,123 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | B · 영향 | `reference-check` | `UNRESOLVED_METHOD` 레포 안 타입에 없는 메서드 호출, `ARITY_MISMATCH` 인자 수가 어떤 선언과도 맞지 않음. base 에도 있던 것은 제외 (`SnapshotAnalyzer`) | BLOCKER |
 | B · 영향 | `ast-behavior` | AST diff(GumTree): `AST_THROW_TO_NULL` 예외 → null 반환, `AST_NULL_CHECK_REMOVED`, `AST_EXCEPTION_SWALLOWED` 빈 catch, `AST_EXCEPTION_REMOVED` | MAJOR (예외 경로 삭제는 MINOR) |
 | C · 보안 | `auth-removal` | `AST_AUTH_REMOVED` 메서드의 권한 어노테이션(@PreAuthorize · @Secured …)이 사라짐 | BLOCKER |
+| C · 보안 | `semgrep` | `SEMGREP` (제목 `Semgrep · 보안: …`) [Semgrep](https://semgrep.dev) 결과 중 보안 규칙(SQL Injection · XSS · 위험한 API · 시크릿 …). 실행은 아래 [Semgrep](#semgrep) 참고 | ERROR → MAJOR, WARNING → MINOR |
 | C · 보안 | `hardcoded-secret` | `HARDCODED_SECRET` 이번 PR 이 추가한 줄의 비밀값. 알려진 키 형식(AWS · GitHub · OpenAI · Slack · Google · 개인키)은 BLOCKER, 이름이 SECRET · TOKEN · PASSWORD · API_KEY … 인 상수 · 설정에 값을 직접 넣으면 MAJOR. `${...}` 주입 · 헤더 이름 · 테스트 코드 제외, 증거에는 값 앞 4자만 | BLOCKER / MAJOR |
 | D · 위험도 | `architecture-delta` | base · head 인덱스의 파일 간 의존을 비교해 이번 PR 이 만든 의존만 본다. `ARCH_LAYER_BYPASS` 웹이 서비스를 건너뛰고 저장소를 바로 부름(프로젝트가 평소 서비스를 거칠 때만), `ARCH_REVERSE_DEPENDENCY` 아래 계층이 위 계층을 부름, `ARCH_NEW_MODULE_DEPENDENCY` 의존하지 않던 두 모듈 사이 새 의존. 증거는 "출발 파일 → 도착 파일" | MAJOR |
 | B · 영향 | `stale-base-rule` | `STALE_BASE_RULE` PR 이 부르는 메서드(PR 이 바꾸지 않은 것)의 규칙이 PR 을 만든 뒤 기본 브랜치에서 바뀜 (규칙 지도 두 장 비교). 예외 · 검사 · 권한 · 정렬 · 원자적 갱신이 사라지거나 null 반환이 생기면 MAJOR | MAJOR / MINOR |
 | C · 보안 | `convention` | 새 코드가 레포 관례(규칙 지도)를 어김: `CONVENTION_GUARD_MISSING` 새 수정·삭제 서비스 메서드에 검사 없음, `CONVENTION_AUTH_MISSING` 새 쓰기 API 에 권한 어노테이션 없음, `CONVENTION_SENSITIVE_FIELD` 응답 DTO 에 민감 필드를 넣음, `CONVENTION_SENSITIVE_RESPONSE` 새 API 가 민감 필드 있는 타입(엔티티)을 그대로 돌려줌 → MAJOR. `CONVENTION_LOOKUP_NULL` 새 조회 메서드가 null 반환 → MINOR (B) | MAJOR / MINOR |
+| D · 위험도 | `semgrep-quality` | `SEMGREP` 보안이 아닌 Semgrep 결과. 제목에 용도가 붙는다: `버그 패턴`(correctness) · `모범 사례`(best-practice · 성능 · 유지보수성) · `팀 규칙`(레포 규칙 파일) · `마이그레이션`(deprecated · 제거된 API, 수정 제안 포함) | ERROR → MAJOR, WARNING → MINOR (모범 사례는 MINOR 까지) |
 | D · 위험도 | `test-trust` | 테스트 신뢰도(정적): 이번 PR 이 바꾼 테스트만 본다. `TEST_REMOVED` 검증하던 테스트를 지웠는데 그 테스트가 부르던 코드는 남음(실패 경로 검증이면 강조), `TEST_WEAKENED` 실패 경로 검증(assertThrows · never() …)이 줄어듦, `TEST_DISABLED` @Disabled · @Ignore 추가 → MAJOR. `TEST_NO_ASSERTION` 검증 없는 테스트, `TEST_TRIVIAL_ASSERTION` 항상 참인 검증뿐, `TEST_SWALLOWED_EXCEPTION` 예외를 삼키는 빈 catch, 검증 수 감소, 코드와 함께 지운 테스트 → MINOR. 같은 클래스의 검증 보조 메서드 호출 · JUnit 4 `@Test(expected)` 도 검증으로 센다 | MAJOR / MINOR |
 
 실행 검증이 켜져 있으면 `EXEC_*` 지적(회귀 · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화 · 테스트가 안 지나간 변경)이 더해진다.
+`SEMGREP` · `SONAR_ISSUE` 는 외부 정적 분석기라 같은 곳을 짚은 AI 지적을 근거 확인에서 CONFIRMED 로 올려 준다.
+
+## Semgrep
+
+`SemgrepScanner` 가 리뷰마다 한 번, 바뀐 파일을 base · head 에서 함께 돌려 head 에만 있고 이번 PR 이 추가한 줄에 걸친 결과만 남긴다
+(base · head 는 라인 번호가 아니라 걸린 코드로 맞춘다). 그 결과를 `semgrep`(C) 과 `semgrep-quality`(D) 가 용도별로 나눠 가져간다.
+테스트 코드 제외, 실행 파일이 없으면 건너뛰고 분석 정보에 남긴다.
+
+| 용도 | 규칙 출처 | 예 |
+|---|---|---|
+| 보안 | 레지스트리 `p/default` (1,000여 개 중 대부분 보안) | SQL Injection, XSS, 하드코딩된 키, 안전하지 않은 암호화 |
+| 버그 패턴 | 레지스트리 `p/r2c-best-practices` 의 correctness | `==` 로 문자열 비교, 항상 참인 조건, 닫지 않은 자원 |
+| 모범 사례 | `p/r2c-best-practices` 의 best-practice · 성능 · 유지보수성 | 판정을 막지 않도록 MINOR 까지만 |
+| 팀 규칙 | 레포의 `.semgrep.yml` · `.semgrep.yaml` · `.semgrep/**/*.yml` | "컨트롤러에서 Repository 직접 호출 금지", "System.out 대신 Logger" |
+| 마이그레이션 | PR Guard 내장 [`semgrep/prguard-rules.yml`](src/main/resources/semgrep/prguard-rules.yml) + 레지스트리 compatibility | `new Integer(5)` → `Integer.valueOf(5)`, `Class.newInstance()`, `new URL(..)`, `javax.*` → `jakarta.*`, `WebSecurityConfigurerAdapter`, `new Buffer(..)` |
+
+- 규칙에 `fix` 가 있으면 지적에 **수정 제안**(바꿀 코드)이 붙는다. 코드를 직접 고치지는 않는다.
+- 팀 규칙은 **base 쪽** 파일을 읽는다. PR 이 자기 규칙을 고쳐 검사를 피하지 못하게 하려는 것으로, 새 규칙은 기본 브랜치에 들어간 뒤부터 적용된다.
+  규칙 파일이 잘못되면 그 파일만 빼고 다시 검사하고 이유를 분석 정보에 남긴다.
+- 팀 규칙 예 (레포 루트 `.semgrep.yml`):
+
+```yaml
+rules:
+  - id: no-repository-in-controller
+    languages: [java]
+    severity: WARNING
+    message: 컨트롤러는 Repository 를 직접 부르지 않고 Service 를 거친다
+    patterns:
+      - pattern-inside: |
+          @RestController
+          class $C { ... }
+      - pattern: $REPO.$M(...)
+      - metavariable-regex:
+          metavariable: $REPO
+          regex: (?i)^\w*repository$
+```
+
+## SonarCloud
+
+중복률 · 복잡도 · 커버리지 · 코드 냄새 · Quality Gate 를 리뷰에 싣는다 (`EXEC_SONAR`). 레포 주인이 SonarCloud 에 따로 등록하지 않는다:
+PR Guard 가 우리 조직(`SONAR_ORGANIZATION`) 아래에 레포마다 public 프로젝트(`prguard_{owner}_{repo}`)를 만들고, PR 코멘트도 PR Guard 가 직접 단다.
+누가 스캔하는지는 리뷰마다 정한다 (단계 기록의 `via`).
+
+| 스캔 | 언제 | 커버리지 |
+|---|---|---|
+| head 러너 (`RUNNER`) | 실행 검증(`EXEC_RUNNER`)이 이 리뷰에서 돌 때. 빌드 · 테스트 뒤에 컴파일 결과와 함께 스캔 | 있음 (JaCoCo) |
+| GitHub Actions (`ACTIONS`) | 실행 검증이 없을 때. `.github/workflows/sonar.yml` 이 PR 코드를 빌드 · 실행하지 않고 소스만 스캔 | 없음 |
+
+1. 리뷰 시작: 프로젝트가 없으면 만들고(`api/projects/create`) 스캔을 맡긴다
+   - 러너: head 러너가 받아 갈 설정을 메모리에 둔다
+   - Actions: 그래프 워크플로와 같은 레포 · ref · 토큰(`GRAPH_DISPATCH_TOKEN`)으로 `sonar.yml` 을 실행한다 (run-name `sonar {headSha}`)
+2. 스캔
+   - 러너: 빌드 전에 `/api/test-runs/{id}/sonar` 로 설정을 받으면 JaCoCo 에이전트를 붙여 테스트 커버리지를 모은다.
+     테스트 · 변이 테스트 뒤 `/sonar/token` 으로 토큰을 **한 번만** 받아 `sonar-scanner` 로 PR 분석(`sonar.pullrequest.*`)을 올리고, 처리 작업 id 를 `report` 에 싣는다
+   - Actions: PR 커밋과 base 브랜치를 받아 `/api/sonar/token` 에서 토큰을 **한 번만** 받고(저장소 비밀값을 쓰지 않음), 스캔 뒤 `/api/sonar/result` 로 처리 작업 id 를 보낸다.
+     API 는 runId 로 우리 레포의 실행 중인 `sonar.yml` 이고 run-name 이 그 커밋인지 GitHub 에 확인한 뒤에만 받는다
+3. 다른 분석이 끝나면: 스캔 결과(Actions 는 `SONAR_SCAN_TIMEOUT` 까지)와 처리(`api/ce/task`)를 기다렸다가 이슈 · 지표 · Quality Gate 를 받는다
+   - `SONAR_ISSUE`: 이번 PR 이 추가한 줄에 걸린 이슈만. 취약점(C) · 버그(B)는 BLOCKER/CRITICAL → MAJOR, MAJOR → MINOR, 코드 냄새(D)는 MINOR 까지. Sonar 혼자서 머지를 막지는 않는다
+   - `SONAR_GATE`: Quality Gate 실패. 심각도는 `SONAR_GATE_SEVERITY` (기본 Sonar way 는 새 코드 커버리지 80% 를 요구해 자주 실패하므로 기본 MINOR)
+   - 단계 기록에 새 코드 커버리지 · 중복률 · 복잡도 등 지표와 SonarCloud 화면 링크
+
+커버리지는 그 실행에서 돈 테스트 기준이다 (영향 테스트 선택이 켜져 있으면 고른 테스트만).
+토큰은 PR 코드(빌드 · 테스트)가 다 돈 뒤에 받지만 같은 컨테이너라 완전히 격리되지는 않는다. 분석 전용 조직과 토큰을 따로 쓰고, 토큰을 누가 먼저 가져가면 그 실행은 스캔하지 않는다.
+
+## 열린 PR 간 수정 영역 겹침 분석
+
+[PR Conflict Detector](https://github.com/github-community-projects/pr-conflict-detector)의 MIT 핵심 엔진을
+번들해 열린 PR의 동일 파일·수정 영역 겹침과 연결된 PR 묶음을 분석한다.
+Python 3.10+ 표준 라이브러리만 필요하며 Docker 이미지에는 Python 3를 포함한다.
+출처·고정 커밋·라이선스는 `src/main/resources/prconflict/UPSTREAM.md`와 `LICENSE`에 보존했다.
+
+- **리뷰 연동**: D(위험도) 검사기 `pr-conflict-detector`가 각 리뷰 때 열린 PR을 조회한다.
+  겹침은 `CROSS_PR_OVERLAP` MINOR로 저장되고 기존 리뷰 화면·요약 코멘트에 상대 PR 번호/링크를 표시한다.
+  이것만으로 머지를 막지 않는다. 표시된 근거는 코드 실행이 아니라 수정 영역의 겹침이다.
+- **API**: `GET /api/projects/{id}/pr-conflicts`는 최신 열린 PR을 다시 조회해
+  `status`, `checkedAt`, `heads`, `conflicts`, `clusters`, `notes`를 반환한다.
+  기존 `/api/**` 인증을 그대로 사용한다. `conflicts[].verified`는 항상 `false`다.
+- **좌표**: GitHub compare API로 실제 merge-base를 구한다. 대상 브랜치와 merge-base가 모두 같은
+  PR끼리만 비교한다. adapter는 diff 문맥을 제외한 조상 쪽 수정 줄/삽입 지점을 사용하며,
+  이름 변경은 기존 파일명으로 연결한다. 같은 작성자의 PR도 비교한다.
+- **범위/실패**: PR 상한, 파일 상한(기존 GitHub 클라이언트 최대 300개), 누락된 patch,
+  서로 다른 merge-base, 수집 중 바뀐 PR은 `PARTIAL`과 안내문으로 표시한다.
+  `COMPLETE`는 수집된 diff 범위를 비교했다는 의미이며 merge 가능/동작 안전을 보장하지 않는다.
+  전체 조회/엔진 실패는 API 503으로 반환하고 리뷰에서는 분석 정보에 실패 이유를 남긴다.
+  꺼진 기능은 `DISABLED`다.
+
+**이 기능은 텍스트/의미적 충돌의 확정 판정기가 아니다.** upstream의 `verify_conflict()`는 PR 두 개를
+함께 병합하지 않으므로 사용하지 않는다. 가상 병합, 함수 호출 관계를 통한 의미적 교차 영향,
+결합 빌드/테스트는 별도 기능이다. 삭제·추가·rename의 일부 경계 상황은 겹침 경고가 넓게 잡힐 수 있다.
+
+리뷰에 저장된 결과는 `checkedAt`/head SHA 기준 스냅샷이다. 다른 PR이 변경되어도 과거 리뷰를
+소급 수정하지 않는다. 최신 상태는 위 API 또는 리뷰 다시 실행으로 확인한다. 이 PR은 별도
+프론트엔드 충돌 전용 화면을 추가하지 않고 기존 지적 화면을 재사용한다.
+
+| 환경변수 | 기본값 | 설명 |
+|---|---|---|
+| `PR_CONFLICT_ENABLED` | `true` | 리뷰/API의 교차 PR 겹침 분석 활성화 |
+| `PR_CONFLICT_PYTHON` | `python3` | Python 3.10+ 실행 파일. Windows 로컬은 `python` 또는 절대 경로 |
+| `PR_CONFLICT_TIMEOUT` | `PT30S` | 번들 Python 엔진 실행 제한 시간 |
+| `PR_CONFLICT_MAX_PULLS` | `30` | 최신 수정 순 분석 PR 수 상한(최대 100, GitHub 목록 첫 페이지) |
+
+각 분석은 목록 조회 외에 PR마다 비교 기준·변경 파일·최신 head를 읽는 API 호출이 필요하다.
+API는 캐시하지 않으므로 polling 용도로 과도하게 호출하지 않는다.
+대상 레포의 Python·빌드 스크립트는 실행하지 않는다. 외부 알림 서비스로 전송하지 않으며
+엔진은 토큰을 상속하지 않는 별도 프로세스에서 실행한다.
+
+검증: `./gradlew test bootJar`. 테스트에는 실제 번들 Python 엔진 실행이 포함되며,
+`PR_CONFLICT_TEST_PYTHON`으로 테스트용 Python 실행 파일을 지정할 수 있다.
 
 ## 패키지
 
@@ -174,6 +288,7 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | `diff` | GitHub patch 해석 (hunk, 추가·삭제 라인, 라인 코멘트 가능 라인) |
 | `analysis` | 지적 사항 모델(`Finding`), 검사기(`Analyzer`, `SnapshotAnalyzer`), 파이프라인, 근거 확인(`FindingGrounder`, `Grounding`), 판정 |
 | `analysis.rules` | 결정적 검사 규칙 (위 "결정적 검사" 표) |
+| `sonar` | SonarCloud: 프로젝트 만들기 · head 러너용 설정과 일회용 토큰 · 처리 대기 · 이슈 · 지표 · Quality Gate → 지적 (`SonarService`, `SonarClient`) |
 | `review` | LLM 리뷰어(`Reviewer`: OpenAI / stats-only), 리뷰 작업 저장 |
 | `report` | 요약·라인 코멘트 본문과 게시 |
 | `pipeline` | 폴링과 리뷰 워커 |
@@ -226,6 +341,9 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | GET | `/api/projects/{id}/runtime` | 프로젝트의 가장 최근 head 호출 기록 (코드 그래프 · 시티 오버레이). 없으면 204 |
 | GET | `/api/test-runs/{id}/extra-files` | 러너 전용 (`X-Run-Token`). 증거 테스트: 200 파일 · 202 만드는 중 · 204 없음 |
 | GET | `/api/test-runs/{id}/mutation` | 러너 전용 (`X-Run-Token`, head 만). 변이 계획: 200 `timeout · class · test` 줄 · 202 고르는 중 · 204 없음 |
+| GET | `/api/test-runs/{id}/sonar` | 러너 전용 (`X-Run-Token`, head 만). SonarCloud 분석 설정: 200 `키 TAB 값` 줄 · 204 하지 않음 |
+| GET | `/api/test-runs/{id}/sonar/token` | 러너 전용 (`X-Run-Token`, head 만). 스캔 직전 한 번만 주는 SonarCloud 토큰. 이미 가져갔으면 204 |
+| POST | `/api/sonar/token` · `/api/sonar/result` | SonarCloud 스캔 워크플로 전용 (`{runId, headSha}` 를 GitHub 에 확인). 토큰 한 번 · 처리 작업 id 또는 실패 이유 |
 | GET | `/api/test-runs/{id}/selection` | 러너 전용 (`X-Run-Token`). 돌릴 테스트: 200 한 줄에 하나씩 테스트 클래스 · 202 고르는 중 · 204 전체 |
 | POST | `/api/test-runs/{id}/progress` · `/report` | 러너 전용 (`X-Run-Token`). 진행 단계, JUnit 보고서 · 빌드 로그 · 호출 기록 |
 
@@ -276,6 +394,15 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `EXEC_MUTATION` · `EXEC_MUTATION_TIMEOUT` | `true` · `PT6M` | 변경분 변이 테스트를 할지, 러너에서 PIT 에 주는 시간 |
 | `EXEC_SELECTION_MAX_AGE` | `P14D` | 기준(전체 실행 기록)이 이보다 오래되면 전체를 돌린다 |
 | `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
+| `SEMGREP_ENABLED` · `SEMGREP_BIN` | `true` · `semgrep` | Semgrep 검사. API 이미지에 들어 있고, 로컬에서는 `pip install semgrep` 해야 돈다 (없으면 건너뜀) |
+| `SEMGREP_CONFIGS` | `p/default,p/r2c-best-practices` | Semgrep 레지스트리 규칙. 레지스트리 이름 또는 규칙 파일 경로, 쉼표로 여러 개 (예: `p/java,p/owasp-top-ten`) |
+| `SEMGREP_BUNDLED` · `SEMGREP_REPO_RULES` | `true` · `true` | PR Guard 마이그레이션 규칙 · 레포 팀 규칙(`.semgrep.yml` · `.semgrep/`)도 함께 쓴다 |
+| `SEMGREP_TIMEOUT` | `PT3M` | Semgrep 한 번 실행의 제한 시간 |
+| `SONAR_ENABLED` | `false` | SonarCloud 분석. 실행 검증이 있으면 head 러너가, 없으면 GitHub Actions 가 스캔 |
+| `SONAR_SCAN_TIMEOUT` | `PT15M` | Actions 스캔이 결과를 보내기를 기다리는 시간 |
+| `SONAR_ORGANIZATION` · `SONAR_TOKEN` | (없음) | 프로젝트를 만들 조직 키, 그 조직에 프로젝트를 만들고 분석을 올릴 수 있는 토큰 |
+| `SONAR_URL` · `SONAR_TIMEOUT` | `https://sonarcloud.io` · `PT5M` | SonarCloud 주소, 올린 분석의 처리를 기다리는 시간 |
+| `SONAR_GATE_SEVERITY` | `MINOR` | Quality Gate 실패를 남길 심각도 (`MAJOR` 면 "수정 후 머지") |
 | `GRAPH_RUNNER` | `actions` | 그래프를 만드는 곳. `actions`: GitHub Actions, `local`: 이 서버 (아래 `GRAPH_NODE` 등 사용) |
 | `GRAPH_DISPATCH_TOKEN` | (`GITHUB_TOKEN`) | pr-guard-api 레포에 Actions 쓰기 권한이 있는 토큰. 워크플로 실행에 쓴다 |
 | `GRAPH_NODE` | `node` | local: node (22.18+ 또는 24.11+) |

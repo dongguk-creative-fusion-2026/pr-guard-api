@@ -18,7 +18,8 @@ public record ContextSummary(
         int historyCommits,
         List<BlameLine> blame,
         List<String> notes,
-        long elapsedMs) {
+        long elapsedMs,
+        GraphImpact graphImpact) {
 
     /**
      * PR 에서 바뀐 파일 (화면에서 레포 그래프 위에 영향 범위를 그릴 때 쓴다).
