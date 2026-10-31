@@ -117,6 +117,61 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 
 실행 검증이 켜져 있으면 `EXEC_*` 지적(회귀 · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화 · 테스트가 안 지나간 변경)이 더해진다.
 
+## Trivy 의존성 · 배포 설정 검사
+
+`TRIVY_ENABLED=true` 로 켜면 `trivy` 검사기가 C(보안) 단계에서 base(merge-base)와 head의
+파일시스템을 검사한다. Java 인덱스나 실행 검증을 켜지 않아도 동작한다. JSON v2 보고서의
+의존성 취약점(`TRIVY_VULNERABILITY`)과 Dockerfile/Kubernetes 설정 실패(`TRIVY_MISCONFIGURATION`)를
+기존 지적·판정·요약/라인 코멘트·화면에 연결한다. 비밀값 검사는 기존 검사기와 중복되지 않게 끈다.
+
+- **새 문제만 보고**: base에 있는 동일 대상/규칙/패키지·리소스는 제외한다. 줄 이동과 GitHub가 알려 준
+  파일 이름 변경도 처리한다. 같은 규칙 위반이 늘면 증가한 개수만 보고한다. CVE가 같은 취약 버전끼리의
+  변경은 새 CVE로 세지 않는다.
+- **비교 조건 고정**: 전용 캐시의 취약점 DB를 먼저 준비하고, JAR/WAR/PAR/EAR가 있을 때만 Java DB도 준비한다.
+  두 검사에서는 DB 업데이트를 막는다.
+  설정 검사는 CLI에 내장된 규칙을 사용한다. 한 인스턴스 안에서는 비교를 직렬화한다.
+- **판정**: 기본 필터는 HIGH/CRITICAL이며 모두 MAJOR다. CVE 등급만으로 악용 가능성이 증명되지는 않는다.
+  필터에 추가한 MEDIUM/LOW/UNKNOWN은 MINOR다. 근거 화면의 인덱스 층에 Trivy 보고서 비교라는 출처를 남긴다.
+- **실패/범위 표시**: 실행 파일 누락, DB 준비 실패, 시간 초과, 잘못된 JSON은 기존 파이프라인이 분석 정보에
+  실패로 기록한다. 실패한 base를 빈 기준선으로 사용하지 않는다. 지원 대상이 없거나 Gradle lockfile이
+  없는 모듈은 범위 안내를 남긴다. 다른 검사 결과는 계속 제공하므로 판정과 함께 분석 정보도 확인해야 한다.
+
+Docker 이미지는 Trivy **0.76.1** CLI를 포함한다. 기본값은 꺼짐이며 배포 환경변수로 켠다.
+로컬에서는 같은 버전의 CLI를 설치하고 `TRIVY_BINARY`에 실행 파일 경로를 지정할 수 있다.
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `TRIVY_ENABLED` | `false` | 검사 실행 여부 |
+| `TRIVY_BINARY` | `trivy` | CLI 실행 파일명 또는 절대 경로 |
+| `TRIVY_CACHE_DIR` | `{tmp}/prguard-trivy` | DB 캐시. 인스턴스별 전용 디렉터리로 사용하고 외부 Trivy와 공유하지 않는다 |
+| `TRIVY_TIMEOUT` | `PT3M` | 각 DB 준비/각 검사 제한 시간. 1초~3분. 최초 DB 다운로드에는 네트워크와 저장 공간이 필요하다 |
+| `TRIVY_SEVERITIES` | `HIGH,CRITICAL` | 보고할 Trivy 심각도 목록 |
+
+검사 대상 저장소의 빌드 스크립트는 실행하지 않는다. 지원되는 lockfile(`gradle.lockfile`,
+`package-lock.json` 등), `pom.xml`, 존재하는 JAR 등 Trivy가 읽을 수 있는 입력만 검사한다.
+**`build.gradle`만으로 Gradle 의존성 전체를 검사할 수 없다.** `--offline-scan`으로 스캔 중 의존성
+식별을 위한 API 요청을 막으므로 원격 Maven 부모/BOM 해석이 필요한 경우에도 검사 범위가 제한된다.
+Git 메타데이터, node_modules, .gradle 캐시, Gradle wrapper JAR는 제외한다. 아카이브 검사 시 Java DB의
+최초 다운로드가 제한 시간을 넘으면 동일 전용 캐시에 DB를 미리 준비한 뒤 재실행할 수 있다.
+Dockerfile의 FROM 이미지를 빌드하거나 가져와 OS 패키지를 검사하는 기능, 실행 중인 클러스터 검사,
+Helm/Terraform 검사는 이 연동의 범위에 포함하지 않는다.
+
+CLI는 소스 밖의 작업 디렉터리에서 직접 실행하며, 서버 토큰/Trivy 환경변수와 대상 레포의
+`trivy.yaml`/`.trivyignore`를 상속하지 않는다. 보고서는 최대 20 MiB까지 읽고 임시 파일은 비교 후 지운다.
+이 설정이 OS 수준의 격리를 제공하는 것은 아니므로 기존 컨테이너의 권한 제한을 유지한다.
+
+검증:
+
+```bash
+./gradlew test bootJar
+# 명시적으로 실행할 때만 실제 CLI와 공개 취약점 DB를 사용하는 통합 테스트
+TRIVY_TEST_BINARY=/absolute/path/to/trivy ./gradlew test --tests '*TrivyCliTest' --rerun-tasks
+```
+
+단위 테스트는 JSON 파싱, 신규/기존 구분, rename/줄 이동, 동일 규칙의 추가 위반, 실패/누락 보고서,
+DB 고정 옵션, 프로세스 시간 초과와 판정 연동을 검사한다. CLI 테스트는 안전한 base와
+Log4j 2.14.1 + `USER root`를 넣은 head를 비교하고, 레포 ignore 파일로 이를 숨길 수 없는지도 확인한다.
+
 ## 패키지
 
 | 패키지 | 역할 |

@@ -1,3 +1,5 @@
+FROM aquasec/trivy:0.76.1 AS trivy
+
 FROM gradle:8.14-jdk21 AS build
 WORKDIR /workspace
 COPY settings.gradle build.gradle ./
@@ -9,6 +11,7 @@ FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 # 분석할 레포를 clone 한다
 RUN apk add --no-cache git && addgroup -S app && adduser -S app -G app
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=build /workspace/build/libs/app.jar app.jar
 USER app
 EXPOSE 8080

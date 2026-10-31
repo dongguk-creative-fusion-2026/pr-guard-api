@@ -113,6 +113,14 @@ prguard:
   links:
     # PR 코멘트의 "분석 과정 보기" 링크 대상 (pr-guard-web)
     web-url: ${WEB_URL:https://pr-guard-web.vercel.app}
+  trivy:
+    # 의존성 취약점 + Dockerfile/Kubernetes 설정. base/head 전체를 같은 DB 로 비교한다.
+    enabled: ${TRIVY_ENABLED:false}
+    binary: ${TRIVY_BINARY:trivy}
+    # 다른 인스턴스/외부 Trivy 프로세스와 공유하지 않는 전용 캐시
+    cache-dir: ${TRIVY_CACHE_DIR:${java.io.tmpdir}/prguard-trivy}
+    timeout: ${TRIVY_TIMEOUT:PT3M}
+    severities: ${TRIVY_SEVERITIES:HIGH,CRITICAL}
   verdict:
     # MAJOR 가 이 개수 이상이면 "수정 후 머지" (BLOCKER 는 1개만 있어도 "머지 비권장")
     major-threshold: 1

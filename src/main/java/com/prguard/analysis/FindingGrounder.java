@@ -136,6 +136,10 @@ public class FindingGrounder {
 
     private Layer index(Finding f, AnalysisContext ctx, Map<Finding, List<MethodInfo>> linked, List<Finding> all,
                         Sources sources) {
+        if (Finding.TOOL.equals(f.source()) && f.ruleId().startsWith("TRIVY_")) {
+            return layer(LayerId.INDEX, Mark.CONFIRMED,
+                    "Trivy base/head 보고서 비교로 확인 (실행·악용 가능성을 증명한 것은 아님)");
+        }
         if (indexRule(f)) {
             return layer(LayerId.INDEX, Mark.CONFIRMED, "정적 검사 " + f.ruleId() + " 가 찾음");
         }
