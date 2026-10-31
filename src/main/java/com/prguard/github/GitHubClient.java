@@ -85,6 +85,20 @@ public class GitHubClient {
                 .retrieve().body(GitHubPull.class);
     }
 
+    /** PR diff의 기준점. 같은 조상 커밋의 줄 좌표를 쓰는 PR끼리만 범위를 비교한다. */
+    public String comparisonBase(RepoRef repo, String baseSha, String headSha) {
+        if (!baseSha.matches("[0-9a-fA-F]{40,64}") || !headSha.matches("[0-9a-fA-F]{40,64}")) {
+            throw new IllegalArgumentException("Invalid comparison commit SHA");
+        }
+        JsonNode node = http.get().uri("/repos/{o}/{r}/compare/{base}...{head}?per_page=1",
+                repo.owner(), repo.name(), baseSha, headSha).retrieve().body(JsonNode.class);
+        String sha = node == null ? "" : node.path("merge_base_commit").path("sha").asText();
+        if (!sha.matches("[0-9a-fA-F]{40,64}")) {
+            throw new IllegalStateException("PR 비교 기준 커밋을 확인하지 못했습니다");
+        }
+        return sha;
+    }
+
     /** PR 의 커밋 메시지 (오래된 순, 최대 250개). */
     public List<String> listPullCommitMessages(RepoRef repo, int number) {
         List<GitHubCommit> commits = http.get()

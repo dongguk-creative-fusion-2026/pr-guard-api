@@ -13,7 +13,7 @@ public final class InvariantRuleCompiler {
             "게시글(?:을|의)?\\s*수정(?:해도|할\\s*때|\\s*시|\\s*전후|\\s*후)(?:에도)?\\s*[,，]?\\s*"
             + "작성자\\s*(?:ID|아이디)(?:는|가|도)?\\s*(?:수정\\s*전후\\s*)?"
             + "(?:같아야\\s*한다|동일해야\\s*한다|유지되어야\\s*한다|유지돼야\\s*한다|바뀌면\\s*안\\s*된다|변경되면\\s*안\\s*된다)[.!。]?",
-            Pattern.CASE_INSENSITIVE);
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     public record Candidate(String status, String source, String ruleId, int version,
                             String property, String precondition, String adapter, String message) {}

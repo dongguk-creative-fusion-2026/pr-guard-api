@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -25,7 +26,7 @@ public class ReviewEventBus {
 
     private final ReviewEventRepository events;
     private final ObjectMapper mapper;
-    private final Map<Long, List<SseEmitter>> subscribers = new ConcurrentHashMap<>();
+    private final Map<Long, List<Subscriber>> subscribers = new ConcurrentHashMap<>();
 
     public ReviewEventBus(ReviewEventRepository events, ObjectMapper mapper) {
         this.events = events;
@@ -48,47 +49,33 @@ public class ReviewEventBus {
      * 화면은 id 로 중복을 거른다.
      */
     public void subscribe(long reviewId, SseEmitter emitter, boolean finished) {
+        Subscriber subscriber = new Subscriber(emitter);
         if (!finished) {
-            subscribers.computeIfAbsent(reviewId, k -> new CopyOnWriteArrayList<>()).add(emitter);
-            Runnable remove = () -> unsubscribe(reviewId, emitter);
+            subscribers.computeIfAbsent(reviewId, k -> new CopyOnWriteArrayList<>()).add(subscriber);
+            Runnable remove = () -> unsubscribe(reviewId, subscriber);
             emitter.onCompletion(remove);
             emitter.onTimeout(remove);
             emitter.onError(e -> remove.run());
         }
         try {
-            synchronized (emitter) {
-                for (ReviewEvent e : events.findByReview(reviewId)) {
-                    emitter.send(SseEmitter.event().id(String.valueOf(e.id())).name("stage")
-                            .data(e, MediaType.APPLICATION_JSON));
-                }
-                if (finished) {
-                    emitter.send(SseEmitter.event().name("end").data("{}", MediaType.APPLICATION_JSON));
-                    emitter.complete();
-                }
-            }
+            subscriber.send(() -> events.findByReview(reviewId).stream().map(ReviewEventBus::stageEvent).toList(),
+                    finished);
         } catch (IOException | IllegalStateException e) {
             emitter.completeWithError(e);
         }
     }
 
     private void publish(ReviewEvent event) {
-        List<SseEmitter> list = subscribers.get(event.reviewId());
+        List<Subscriber> list = subscribers.get(event.reviewId());
         if (list == null) {
             return;
         }
         boolean end = event.stage() == Stage.REVIEW && event.status() != StageStatus.RUNNING;
-        for (SseEmitter emitter : list) {
+        for (Subscriber subscriber : list) {
             try {
-                synchronized (emitter) {
-                    emitter.send(SseEmitter.event().id(String.valueOf(event.id())).name("stage")
-                            .data(event, MediaType.APPLICATION_JSON));
-                    if (end) {
-                        emitter.send(SseEmitter.event().name("end").data("{}", MediaType.APPLICATION_JSON));
-                        emitter.complete();
-                    }
-                }
+                subscriber.send(() -> List.of(stageEvent(event)), end);
             } catch (IOException | IllegalStateException e) {
-                unsubscribe(event.reviewId(), emitter);
+                unsubscribe(event.reviewId(), subscriber);
             }
         }
         if (end) {
@@ -99,22 +86,24 @@ public class ReviewEventBus {
     /** 프록시가 유휴 연결을 끊지 않게 주기적으로 주석 한 줄을 보낸다. */
     @Scheduled(fixedDelayString = "PT15S")
     public void heartbeat() {
-        subscribers.forEach((reviewId, list) -> list.forEach(emitter -> {
+        subscribers.forEach((reviewId, list) -> list.forEach(subscriber -> {
             try {
-                synchronized (emitter) {
-                    emitter.send(SseEmitter.event().comment("ping"));
-                }
+                subscriber.send(() -> List.of(SseEmitter.event().comment("ping")), false);
             } catch (IOException | IllegalStateException e) {
-                unsubscribe(reviewId, emitter);
+                unsubscribe(reviewId, subscriber);
             }
         }));
     }
 
-    private void unsubscribe(long reviewId, SseEmitter emitter) {
-        List<SseEmitter> list = subscribers.get(reviewId);
+    private void unsubscribe(long reviewId, Subscriber subscriber) {
+        List<Subscriber> list = subscribers.get(reviewId);
         if (list != null) {
-            list.remove(emitter);
+            list.remove(subscriber);
         }
+    }
+
+    private static SseEmitter.SseEventBuilder stageEvent(ReviewEvent event) {
+        return SseEmitter.event().id(String.valueOf(event.id())).name("stage").data(event, MediaType.APPLICATION_JSON);
     }
 
     private String json(Map<String, ?> data) {
@@ -125,6 +114,27 @@ public class ReviewEventBus {
             return mapper.writeValueAsString(data);
         } catch (JsonProcessingException e) {
             return null;
+        }
+    }
+
+    /** 화면 연결 하나. 구독 · 발행 · 하트비트가 다른 스레드에서 보내므로 한 번에 하나씩 보낸다 */
+    private static final class Subscriber {
+
+        private final SseEmitter emitter;
+
+        Subscriber(SseEmitter emitter) {
+            this.emitter = emitter;
+        }
+
+        /** 잠근 뒤 events 를 만들어 차례로 보내고, end 면 끝 이벤트를 보내고 닫는다 */
+        synchronized void send(Supplier<List<SseEmitter.SseEventBuilder>> events, boolean end) throws IOException {
+            for (SseEmitter.SseEventBuilder e : events.get()) {
+                emitter.send(e);
+            }
+            if (end) {
+                emitter.send(SseEmitter.event().name("end").data("{}", MediaType.APPLICATION_JSON));
+                emitter.complete();
+            }
         }
     }
 }
