@@ -1,6 +1,6 @@
 import unittest
 
-from invariant_check import Observation, check
+from invariant_check import Observation, check, check_candidate
 
 
 class FixtureAdapter:
@@ -13,6 +13,14 @@ class FixtureAdapter:
 
 
 class InvariantCheckTest(unittest.TestCase):
+    def test_structured_candidate_selects_trusted_property(self):
+        candidate = {"status": "CANDIDATE", "ruleId": "post-author-preserved-on-update",
+                     "version": 1, "adapter": "post-update-v1"}
+        result = check_candidate(candidate, FixtureAdapter(), FixtureAdapter(True), max_examples=500)
+        self.assertEqual(result["status"], "new_violation")
+        with self.assertRaises(ValueError):
+            check_candidate({**candidate, "ruleId": "unknown"}, FixtureAdapter(), FixtureAdapter())
+
     def test_new_violation_and_exact_replay(self):
         result = check(FixtureAdapter(), FixtureAdapter(True), max_examples=500)
         self.assertEqual(result["status"], "new_violation")

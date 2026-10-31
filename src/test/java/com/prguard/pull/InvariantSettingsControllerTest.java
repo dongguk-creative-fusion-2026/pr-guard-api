@@ -28,7 +28,7 @@ class InvariantSettingsControllerTest {
         jdbc = mock(JdbcClient.class, RETURNS_DEEP_STUBS);
         ProjectService projects = mock(ProjectService.class);
         when(projects.get(anyLong())).thenReturn(null);
-        mvc = MockMvcBuilders.standaloneSetup(new InvariantSettingsController(projects, jdbc))
+        mvc = MockMvcBuilders.standaloneSetup(new InvariantSettingsController(projects, jdbc, mock(InvariantInterpreter.class)))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
 

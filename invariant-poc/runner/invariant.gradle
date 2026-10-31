@@ -1,0 +1,9 @@
+allprojects {
+    plugins.withId('java') {
+        dependencies { testRuntimeOnly 'com.h2database:h2:2.3.232' }
+        tasks.withType(Test).configureEach {
+            systemProperty 'spring.main.web-application-type', 'servlet'
+            maxHeapSize = '512m'
+        }
+    }
+}

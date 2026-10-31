@@ -1,4 +1,4 @@
-"""Small, adapter-driven property-testing prototype; not integrated into PR Guard."""
+"""Property primitives shared by the Actions runner and fast adapter tests."""
 
 from dataclasses import asdict, dataclass
 from typing import Protocol
@@ -23,6 +23,21 @@ class Observation:
 class Adapter(Protocol):
     def run(self, update: Update) -> Observation:
         """Reset to the same fixture, perform one update, and observe author IDs."""
+
+
+def check_candidate(candidate: dict, base: Adapter, head: Adapter, *, max_examples: int = 100) -> dict:
+    """Consume the structured API candidate using a trusted property implementation.
+
+    The caller must confirm the candidate and supply the post-update-v1 adapters.
+    No source code or expressions from the request are evaluated.
+    """
+    if (candidate.get("status") != "CANDIDATE"
+            or candidate.get("ruleId") != "post-author-preserved-on-update"
+            or candidate.get("version") != 1
+            or candidate.get("adapter") != "post-update-v1"):
+        raise ValueError("unsupported invariant candidate")
+    result = check(base, head, max_examples=max_examples)
+    return {**result, "ruleId": candidate["ruleId"], "version": 1}
 
 
 def violates(obs: Observation) -> bool:
