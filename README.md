@@ -22,6 +22,8 @@ PR Guard 백엔드. AI 네이티브 개발 환경에서 **속도는 그대로 �
 
 현재 실행 어댑터는 `pr-guard-sandbox`의 **게시글 수정 전후 작성자 ID 보존** 규칙 하나다. 실제 Spring 서비스와 JPA를 H2 PostgreSQL 호환 모드에서 실행한다. 일반적인 모든 업무 규칙을 자동 실행하거나, 실제 PostgreSQL 고유 동작 및 HTTP 인증을 검증하는 기능은 아니다. 다른 조건과 규칙은 검토 후보로 표시한다. 결과는 기존 머지 판정에 반영하지 않는다.
 
+프런트에서는 프로젝트 **정합성 규칙**을 선택적으로 저장한 뒤 PR 상세의 **데이터 정합성 규칙**에서 초안을 입력·저장한다. **규칙 후보 생성**으로 해석 내용을 확인하고, 지원 후보의 **Hypothesis 테스트 실행**을 누르면 Actions 상태와 결과가 표시된다. 상세한 화면 순서는 [프런트 README](https://github.com/dongguk-creative-fusion-2026/pr-guard-web/blob/main/README.md#데이터-정합성-규칙과-hypothesis-실행)를 참고한다.
+
 ### 배포와 활성화
 
 1. `.github/workflows/invariant-check.yml`과 `invariant-poc/`를 기본 브랜치에 반영한다.
