@@ -39,6 +39,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   ├ Reviewer        LLM 리뷰 (JSON 스키마 응답, 구조 정보 함께 전달). 위 검사와 동시에 돈다
   │   │                 지적마다 kind(MISSING_SYMBOL · MISSING_CHECK · SECURITY …)와 근거 이름을 받고,
   │   │                 kind 가 SECURITY 면 분류를 C(보안)로 둔다
+  │   ├ ConflictReviewer 기존 코드 충돌: 바뀐 메서드가 기대던 기존 코드를 모아 "기존 규칙과 충돌하는가"만 따로 묻는다 (아래 "기존 코드 충돌")
   │   ├ TestRunService  실행 검증 (EXEC_RUNNER 가 켜져 있으면, 소스 준비 직후 나란히 시작)
   │   │   ├ 쿠버네티스 Job 으로 base · head 러너(runner/) 기동 → clone · 빌드 · 테스트 → JUnit 결과 콜백
   │   │   ├ TestSelector     영향 테스트 선택: 바뀐 메서드를 지나가는 테스트 클래스만 base · head 에서 돌린다 (아래 "영향 테스트 선택")
@@ -50,7 +51,7 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
   │   │   ├ 인덱스: 결정적 검사가 같은 곳을 지적했나, AI 가 "없다"고 한 이름이 head 에 있나,
   │   │   │         "빠졌다"고 한 검사가 연결된 코드(바뀐 메서드 · 호출부 · 그 타입을 받는 메서드)에 있나 (있으면 위치만 보여 주고 반박하지 않음)
   │   │   ├ 이력 · 실행 · AI: 빠진 동시 변경 파일 · 지운 줄의 원래 커밋, 실행으로 증명한 동작 변화, AI 도 같은 곳을 지적했나
-  │   │   └ 상태: CONFIRMED (AI 아닌 층도 확인) · AI_ONLY (AI 만 주장) · REFUTED ("없다"고 한 이름이 head 에 있음 → 판정 · 라인 코멘트에서 뺌)
+  │   │   └ 상태: CONFIRMED (AI 아닌 층도 확인) · AI_ONLY (AI 만 주장) · REFUTED ("없다"고 한 이름이 head 에 있음, 충돌 근거로 든 기존 코드가 없음 → 판정 · 라인 코멘트에서 뺌)
   │   └ VerdictPolicy   판정 계산 (BLOCKER ≥1 → 머지 비권장, MAJOR ≥1 → 수정 후 머지, REFUTED 는 세지 않음)
   ├ 저장: findings, 판정, 분석 재료 요약(context)
   └ PR: 요약 코멘트 1개(계속 수정) + 라인 코멘트(같은 지적은 한 번만)
@@ -86,6 +87,23 @@ ReviewWorker (10초마다) — PENDING 하나를 집어서
 
 요약이 다른 요청은 다른 관측 테스트와 같이 `EXEC_BEHAVIOR_DIFF`(MAJOR)로 핸들러 메서드에 붙고, PR 화면의 "동작 diff" 카드에 요청마다 base · head 응답이 나온다.
 
+
+## 기존 코드 충돌
+
+AI 는 요청받은 곳만 보고 고치다가, 기존 코드가 지키던 규칙(없으면 404, 정렬 순서, 원자적 갱신 …)을 모른 채 깨뜨린다. diff 에는 그 규칙이 보이지 않아 일반 리뷰로는 놓친다.
+예: sandbox #15 는 댓글 작성에서 `getPost`(없으면 `NotFoundException` → 404) 대신 `getReference`(조회 없음)를 불러, 없는 게시글이면 500 이 난다.
+
+1. **기존 코드 모으기** (`ContractContext`, LLM 없음): 본문 · 시그니처가 바뀐 메서드(테스트 아님, 최대 `max-methods`)마다 인덱스로 찾는다.
+   - PR 전 본문
+   - PR 전에는 부르다 이제 안 부르는 메서드 · 이번에 새로 부르는 메서드 (본문)
+   - PR 전 경로(본문 + 한 단계 아래 메서드)에서는 던지던 예외 중 이제 안 던지는 것 (타입 선언부, 예: `@ResponseStatus(NOT_FOUND)`)
+   - 이 메서드를 부르는 곳 (호출한 줄 앞뒤), 이 메서드나 안 부르게 된 메서드를 부르는 테스트
+
+   조각마다 `[C1]` 같은 id 를 붙이고, 전체 길이는 `max-chars` 까지. 모을 것이 없으면 LLM 을 부르지 않는다.
+2. **따로 묻기** (`ConflictReviewer`, 단계 `LLM_CONFLICT`): 일반 리뷰와 나란히, "이 변경이 기존 코드가 지키던 규칙과 충돌하는가"만 묻는다. 지적마다 충돌하는 조각 id(`refs`)를 반드시 받는다. 프롬프트는 `resources/prompts/conflict-system.md`.
+3. **근거 확인**: `LLM_CONFLICT` 지적(분류 B, kind `CONTRACT_CONFLICT`)은 인용한 조각이 모은 묶음에 있으면 인덱스 층에 그 코드를 맥락(RELATED)으로 남기고, 묶음에 없는 id 만 들었으면 근거를 지어낸 것으로 보고 REFUTED. 충돌인지는 AI 의 해석이라 인덱스가 확인(CONFIRMED)하지 않는다. 실행 검증이 같은 파일의 동작 변화를 증명하면 CONFIRMED.
+
+설정: `prguard.conflict.enabled`(`CONFLICT_ENABLED`) · `max-methods` · `max-chars`. `OPENAI_API_KEY` 가 없으면 건너뛴다.
 
 ## 테스트 신뢰도
 

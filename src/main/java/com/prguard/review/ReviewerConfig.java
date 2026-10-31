@@ -21,4 +21,13 @@ public class ReviewerConfig {
         }
         return new OpenAiReviewer(builder, openai, new ReviewPrompt(review.maxPatchChars()), mapper);
     }
+
+    @Bean
+    ConflictReviewer conflictReviewer(RestClient.Builder builder, OpenAiProperties openai, ConflictProperties conflict,
+                                      ObjectMapper mapper) {
+        if (!openai.enabled() || !conflict.enabled()) {
+            return ConflictReviewer.DISABLED;
+        }
+        return new OpenAiConflictReviewer(builder, openai, mapper);
+    }
 }

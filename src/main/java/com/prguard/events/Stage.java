@@ -5,7 +5,7 @@ package com.prguard.events;
  *
  * <pre>
  * COLLECT → CHECKOUT → INDEX_BASE ∥ INDEX_HEAD → METHOD_DIFF → HISTORY
- *        → CHECK_A ∥ CHECK_B ∥ CHECK_C ∥ CHECK_D ∥ LLM → GROUND → VERDICT → PUBLISH → REVIEW
+ *        → CHECK_A ∥ CHECK_B ∥ CHECK_C ∥ CHECK_D ∥ LLM ∥ LLM_CONFLICT → GROUND → VERDICT → PUBLISH → REVIEW
  *
  * 실행 검증 레인 (CHECKOUT 뒤에서 나란히 돌고 GROUND 에 합류):
  *   EXEC_PREPARE → EXEC_POD_BASE → EXEC_TEST_BASE ┐
@@ -30,6 +30,8 @@ public enum Stage {
     CHECK_C,
     CHECK_D,
     LLM,
+    /** 바뀐 메서드가 기대던 기존 코드를 모아 "기존 규칙과 충돌하는가"를 LLM 에 따로 묻는다 */
+    LLM_CONFLICT,
     /** 실행 검증: 러너 이미지와 base · head 실행(Job) 만들기 */
     EXEC_PREPARE,
     /** base · head Pod(컨테이너) 스케줄 · 이미지 받기 · 기동 */

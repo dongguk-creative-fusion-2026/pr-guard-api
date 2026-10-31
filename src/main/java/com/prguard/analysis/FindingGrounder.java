@@ -43,6 +43,9 @@ import org.springframework.stereotype.Component;
 @Component
 public class FindingGrounder {
 
+    /** 기존 코드 충돌 검사(LLM_CONFLICT)의 지적 종류. 근거 이름 = AI 가 인용한 기존 코드 조각의 코드 이름 */
+    public static final String CONTRACT_CONFLICT = "CONTRACT_CONFLICT";
+
     /** 같은 문제로 보는 라인 거리 */
     private static final int NEAR_LINES = 3;
     /** 이 횟수 이상 바뀐 파일은 "자주 바뀌는 파일" */
@@ -151,6 +154,9 @@ public class FindingGrounder {
             }
         }
         Grounding claim = f.grounding();
+        if (claim != null && CONTRACT_CONFLICT.equals(claim.kind())) {
+            return contractConflict(f, claim);
+        }
         if (claim != null && !claim.symbols().isEmpty()) {
             Optional<Layer> checked = switch (claim.kind()) {
                 case "MISSING_SYMBOL" -> missingSymbol(claim.symbols(), ctx.headIndex());
@@ -362,6 +368,18 @@ public class FindingGrounder {
         return head.calls().stream().anyMatch(c -> c.callerId().equals(m.id()) && c.calleeName().equals(name));
     }
 
+    /**
+     * 기존 코드 충돌: AI 가 인용한 조각이 모은 기존 코드에 있으면 그 코드를 맥락으로 남긴다. 충돌인지는 AI 의 해석이라 확인하지 않는다.
+     * 인용한 조각이 하나도 없으면(묶음에 없는 id 만 들었으면) 근거를 지어낸 것이라 판정에서 뺀다.
+     */
+    private static Layer contractConflict(Finding f, Grounding claim) {
+        if (claim.symbols().isEmpty()) {
+            return layer(LayerId.INDEX, Mark.REFUTED, "AI 가 든 근거가 모은 기존 코드에 없음");
+        }
+        return layer(LayerId.INDEX, Mark.RELATED, "충돌한다는 기존 코드: "
+                + (f.evidence() != null ? f.evidence() : names(claim.symbols().stream().map(FindingGrounder::shortId).toList())));
+    }
+
     /** 옛 시그니처로 부르는 곳이 있으면 확인, 호출부가 있으면 맥락. */
     private static Optional<Layer> brokenCaller(List<MethodInfo> linked, AnalysisContext ctx) {
         Set<String> ids = linked.stream().map(MethodInfo::id).collect(Collectors.toSet());
@@ -476,6 +494,7 @@ public class FindingGrounder {
             case "SECURITY" -> "보안";
             case "DATA" -> "데이터";
             case "INTENT" -> "의도 불일치";
+            case CONTRACT_CONFLICT -> "기존 코드와 충돌";
             default -> "기타";
         };
     }
