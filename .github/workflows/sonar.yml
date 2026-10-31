@@ -1,0 +1,146 @@
+# PR 하나를 SonarCloud 로 스캔해 처리 작업 id 를 API 에 보낸다.
+# 실행 검증 러너가 없을 때 API(SonarService)가 workflow_dispatch 로 실행한다. 러너가 있으면 러너가 커버리지와 함께 스캔한다.
+# PR 코드를 빌드 · 실행하지 않고 소스만 스캔한다 (컴파일 결과 없이 Java 분석, 커버리지 없음).
+# 토큰은 저장소 비밀값이 아니라 API 에서 한 번만 받는다 (API 는 runId 로 우리 워크플로 실행인지 GitHub 에 확인한다).
+name: sonar
+run-name: sonar ${{ inputs.head_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 분석할 public 레포 (owner/name)
+        required: true
+      pr:
+        description: PR 번호
+        required: true
+      head_sha:
+        description: PR head 커밋
+        required: true
+      head_ref:
+        description: PR 브랜치
+        required: false
+      base_ref:
+        description: PR 대상 브랜치
+        required: true
+      project_key:
+        description: SonarCloud 프로젝트 키
+        required: true
+      organization:
+        description: SonarCloud 조직 키
+        required: true
+      host:
+        description: SonarCloud 주소
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sonar-${{ inputs.head_sha }}
+  cancel-in-progress: true
+
+env:
+  # 결과를 보낼 API. 레포 Variables 에 PR_GUARD_API_URL 로 둔다 (그래프 워크플로와 같은 값)
+  API_URL: ${{ vars.PR_GUARD_API_URL }}
+  # 입력은 셸에 그대로 넣지 않고 환경 변수로만 쓴다 (브랜치 이름 등에 셸 문법이 섞일 수 있다)
+  REPO: ${{ inputs.repo }}
+  PR: ${{ inputs.pr }}
+  HEAD_SHA: ${{ inputs.head_sha }}
+  HEAD_REF: ${{ inputs.head_ref }}
+  BASE_REF: ${{ inputs.base_ref }}
+  PROJECT_KEY: ${{ inputs.project_key }}
+  ORGANIZATION: ${{ inputs.organization }}
+  SONAR_HOST: ${{ inputs.host }}
+  SCANNER_VERSION: 8.1.0.6389
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 결과 보내기 준비
+        run: |
+          cat > "$RUNNER_TEMP/report.sh" <<'SH'
+          # report <task> <error>
+          jq -n --argjson run "$GITHUB_RUN_ID" --arg sha "$HEAD_SHA" --arg task "$1" --arg error "$2" \
+            '{runId: $run, headSha: $sha, task: (if $task == "" then null else $task end), error: (if $error == "" then null else $error end)}' |
+            curl --fail-with-body --silent --show-error --max-time 30 -X POST -H 'Content-Type: application/json' \
+              --data-binary @- "$API_URL/api/sonar/result"
+          SH
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: 대상 레포 받기
+        run: |
+          git init -q "$RUNNER_TEMP/src"
+          cd "$RUNNER_TEMP/src"
+          git remote add origin "https://github.com/$REPO.git"
+          # 포크 PR 커밋은 원본 레포에서 pull/N/head 로만 받을 수 있다
+          git fetch -q --depth 1 origin "$HEAD_SHA" || git fetch -q origin "pull/$PR/head"
+          git -c advice.detachedHead=false checkout -q "$HEAD_SHA"
+          # PR 이 바꾼 줄만 새 코드로 보려면 base 브랜치와 공통 조상이 있어야 한다
+          git fetch -q --deepen 200 origin "$HEAD_SHA" || true
+          if git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1; then
+            git fetch -q --depth 200 origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" || true
+          fi
+
+      - name: 스캐너 받기
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/scanner.zip" \
+            "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$SCANNER_VERSION.zip"
+          unzip -q "$RUNNER_TEMP/scanner.zip" -d "$RUNNER_TEMP"
+          echo "SCANNER=$RUNNER_TEMP/sonar-scanner-$SCANNER_VERSION/bin/sonar-scanner" >> "$GITHUB_ENV"
+
+      - name: SonarCloud 스캔
+        id: scan
+        working-directory: ${{ runner.temp }}/src
+        run: |
+          # 모듈마다 소스 · 테스트 디렉터리. Java 소스가 없으면 레포 전체를 소스로 본다
+          srcs=$(find . -type d -path '*/src/main/java' -not -path './.git/*' | sed 's#^\./##' | sort | paste -sd, -)
+          tests=$(find . -type d -path '*/src/test/java' -not -path './.git/*' | sed 's#^\./##' | sort | paste -sd, -)
+          [ -n "$srcs" ] || srcs=.
+          args=(
+            "-Dsonar.host.url=$SONAR_HOST" "-Dsonar.organization=$ORGANIZATION" "-Dsonar.projectKey=$PROJECT_KEY"
+            "-Dsonar.pullrequest.key=$PR" "-Dsonar.pullrequest.base=$BASE_REF"
+            "-Dsonar.sources=$srcs" -Dsonar.sourceEncoding=UTF-8 -Dsonar.scanner.skipJreProvisioning=true
+            # 빌드하지 않으므로 컴파일 결과는 빈 디렉터리 (Java 규칙은 소스만으로 돈다)
+            "-Dsonar.java.binaries=$RUNNER_TEMP/no-classes"
+          )
+          [ -n "$HEAD_REF" ] && args+=("-Dsonar.pullrequest.branch=$HEAD_REF") || args+=("-Dsonar.pullrequest.branch=pr-$PR")
+          [ -n "$tests" ] && args+=("-Dsonar.tests=$tests")
+          mkdir -p "$RUNNER_TEMP/no-classes"
+
+          token=$(jq -n --argjson run "$GITHUB_RUN_ID" --arg sha "$HEAD_SHA" '{runId: $run, headSha: $sha}' |
+            curl --fail --silent --max-time 30 -X POST -H 'Content-Type: application/json' --data-binary @- \
+              "$API_URL/api/sonar/token" || true)
+          if [ -z "$token" ]; then
+            echo "error=API 에서 SonarCloud 토큰을 받지 못함" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::add-mask::$token"
+          if ! SONAR_TOKEN="$token" "$SCANNER" "${args[@]}"; then
+            echo "error=sonar-scanner 실패 ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          task=$(sed -n 's/^ceTaskId=//p' .scannerwork/report-task.txt | head -1)
+          if [ -n "$task" ]; then
+            echo "task=$task" >> "$GITHUB_OUTPUT"
+          else
+            echo "error=스캔 결과에 처리 작업 id 가 없음" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 결과 보내기
+        # 취소(같은 커밋 새 실행에 밀림)면 보내지 않는다
+        if: success() || failure()
+        env:
+          TASK: ${{ steps.scan.outputs.task }}
+          ERROR: ${{ steps.scan.outputs.error }}
+        run: |
+          if [ -z "$TASK" ] && [ -z "$ERROR" ]; then
+            ERROR="스캔 워크플로 실패 ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          fi
+          bash "$RUNNER_TEMP/report.sh" "$TASK" "$ERROR"
