@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
 public final class RuleExtractor {
 
     /** 뽑는 방식이 바뀌면 올린다. 저장해 둔 지도는 같은 버전만 다시 쓴다 */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     public static final String WRITE_GUARD = "WRITE_GUARD";
     public static final String LOOKUP_THROWS = "LOOKUP_THROWS";
@@ -45,7 +45,7 @@ public final class RuleExtractor {
 
     private static final double MIN_CONVENTION_RATIO = 0.75;
     private static final int MIN_CONVENTION_TOTAL = 2;
-    private static final int MAX_MEMBERS = 8;
+    private static final int MAX_MEMBERS = 60;
 
     private static final Pattern NEW_EXCEPTION = Pattern.compile("\\bnew\\s+([A-Z]\\w*(?:Exception|Error))\\s*\\(");
     private static final Pattern RETURNS_NULL = Pattern.compile("\\breturn\\s+null\\s*;|\\.orElse\\(\\s*null\\s*\\)");
@@ -266,7 +266,8 @@ public final class RuleExtractor {
             return;
         }
         out.add(new Rule(Kind.CONVENTION.name() + "|" + key, Kind.CONVENTION, Rule.Origin.CONVENTION, key, statement,
-                detail, null, 0, following.size(), all.size(), following.stream().map(id).limit(MAX_MEMBERS).toList()));
+                detail, null, 0, following.size(), all.size(), following.stream().map(id).limit(MAX_MEMBERS).toList(),
+                all.stream().filter(x -> !following.contains(x)).map(id).limit(MAX_MEMBERS).toList()));
     }
 
     private static boolean has(Map<String, List<Rule>> bySubject, MethodInfo m, Kind kind) {

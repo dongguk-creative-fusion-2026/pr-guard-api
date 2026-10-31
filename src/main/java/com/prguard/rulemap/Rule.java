@@ -12,7 +12,8 @@ import java.util.List;
  * @param detail    종류별 값 (예외 이름, 검사 메서드, 쿼리, 필드 제약 …)
  * @param support   관례: 따르는 곳 수. 사실이면 1
  * @param total     관례: 해당하는 곳 수. 사실이면 1
- * @param members   관례: 따르는 메서드 · 타입 (최대 몇 개)
+ * @param members   관례: 따르는 메서드 · 타입
+ * @param outliers  관례: 같은 종류인데 따르지 않는 메서드 · 타입 (사람이 확인할 곳)
  */
 public record Rule(
         String id,
@@ -25,7 +26,8 @@ public record Rule(
         int line,
         int support,
         int total,
-        List<String> members) {
+        List<String> members,
+        List<String> outliers) {
 
     public enum Kind {
         /** 메서드가 예외를 던진다 */
@@ -53,7 +55,7 @@ public record Rule(
 
     static Rule fact(Kind kind, String subject, String statement, String detail, String file, int line) {
         return new Rule(kind.name() + "|" + subject + "|" + detail, kind, Origin.CODE, subject, statement, detail,
-                file, line, 1, 1, List.of());
+                file, line, 1, 1, List.of(), List.of());
     }
 
     /** 근거 위치 (파일 이름:줄) */
