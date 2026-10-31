@@ -22,11 +22,19 @@ public record SonarProperties(Boolean enabled, String url, String organization, 
 
     public SonarProperties {
         enabled = enabled != null && enabled;
-        url = url == null || url.isBlank() ? "https://sonarcloud.io" : url.replaceAll("/+$", "");
+        url = url == null || url.isBlank() ? "https://sonarcloud.io" : trimSlashes(url);
         projectPrefix = projectPrefix == null ? "prguard_" : projectPrefix;
         timeout = timeout == null ? Duration.ofMinutes(5) : timeout;
         gateSeverity = gateSeverity == null ? Severity.MINOR : gateSeverity;
         maxIssues = maxIssues <= 0 ? 50 : maxIssues;
+    }
+
+    private static String trimSlashes(String url) {
+        int end = url.length();
+        while (end > 0 && url.charAt(end - 1) == '/') {
+            end--;
+        }
+        return url.substring(0, end);
     }
 
     public boolean active() {

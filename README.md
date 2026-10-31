@@ -115,13 +115,49 @@ AI 없이 규칙으로 잡는 검사. 근거 확인에서 인덱스 층이 확�
 | B · 영향 | `reference-check` | `UNRESOLVED_METHOD` 레포 안 타입에 없는 메서드 호출, `ARITY_MISMATCH` 인자 수가 어떤 선언과도 맞지 않음. base 에도 있던 것은 제외 (`SnapshotAnalyzer`) | BLOCKER |
 | B · 영향 | `ast-behavior` | AST diff(GumTree): `AST_THROW_TO_NULL` 예외 → null 반환, `AST_NULL_CHECK_REMOVED`, `AST_EXCEPTION_SWALLOWED` 빈 catch, `AST_EXCEPTION_REMOVED` | MAJOR (예외 경로 삭제는 MINOR) |
 | C · 보안 | `auth-removal` | `AST_AUTH_REMOVED` 메서드의 권한 어노테이션(@PreAuthorize · @Secured …)이 사라짐 | BLOCKER |
-| C · 보안 | `semgrep` | `SEMGREP` [Semgrep](https://semgrep.dev) 규칙(기본 `p/default`: SQL Injection · 위험한 API · 인증 누락 …)으로 바뀐 파일을 base · head 에서 한 번에 돌려, head 에만 있고 이번 PR 이 추가한 줄에 걸친 결과만 남긴다. base · head 는 라인 번호가 아니라 걸린 코드로 맞춘다. 보안 규칙이 아니면 분류는 일반. 테스트 코드 제외, 실행 파일이 없으면 건너뛰고 분석 정보에 남긴다 | ERROR → MAJOR, WARNING → MINOR |
+| C · 보안 | `semgrep` | `SEMGREP` (제목 `Semgrep · 보안: …`) [Semgrep](https://semgrep.dev) 결과 중 보안 규칙(SQL Injection · XSS · 위험한 API · 시크릿 …). 실행은 아래 [Semgrep](#semgrep) 참고 | ERROR → MAJOR, WARNING → MINOR |
 | C · 보안 | `hardcoded-secret` | `HARDCODED_SECRET` 이번 PR 이 추가한 줄의 비밀값. 알려진 키 형식(AWS · GitHub · OpenAI · Slack · Google · 개인키)은 BLOCKER, 이름이 SECRET · TOKEN · PASSWORD · API_KEY … 인 상수 · 설정에 값을 직접 넣으면 MAJOR. `${...}` 주입 · 헤더 이름 · 테스트 코드 제외, 증거에는 값 앞 4자만 | BLOCKER / MAJOR |
 | D · 위험도 | `architecture-delta` | base · head 인덱스의 파일 간 의존을 비교해 이번 PR 이 만든 의존만 본다. `ARCH_LAYER_BYPASS` 웹이 서비스를 건너뛰고 저장소를 바로 부름(프로젝트가 평소 서비스를 거칠 때만), `ARCH_REVERSE_DEPENDENCY` 아래 계층이 위 계층을 부름, `ARCH_NEW_MODULE_DEPENDENCY` 의존하지 않던 두 모듈 사이 새 의존. 증거는 "출발 파일 → 도착 파일" | MAJOR |
+| D · 위험도 | `semgrep-quality` | `SEMGREP` 보안이 아닌 Semgrep 결과. 제목에 용도가 붙는다: `버그 패턴`(correctness) · `모범 사례`(best-practice · 성능 · 유지보수성) · `팀 규칙`(레포 규칙 파일) · `마이그레이션`(deprecated · 제거된 API, 수정 제안 포함) | ERROR → MAJOR, WARNING → MINOR (모범 사례는 MINOR 까지) |
 | D · 위험도 | `test-trust` | 테스트 신뢰도(정적): 이번 PR 이 바꾼 테스트만 본다. `TEST_REMOVED` 검증하던 테스트를 지웠는데 그 테스트가 부르던 코드는 남음(실패 경로 검증이면 강조), `TEST_WEAKENED` 실패 경로 검증(assertThrows · never() …)이 줄어듦, `TEST_DISABLED` @Disabled · @Ignore 추가 → MAJOR. `TEST_NO_ASSERTION` 검증 없는 테스트, `TEST_TRIVIAL_ASSERTION` 항상 참인 검증뿐, `TEST_SWALLOWED_EXCEPTION` 예외를 삼키는 빈 catch, 검증 수 감소, 코드와 함께 지운 테스트 → MINOR. 같은 클래스의 검증 보조 메서드 호출 · JUnit 4 `@Test(expected)` 도 검증으로 센다 | MAJOR / MINOR |
 
 실행 검증이 켜져 있으면 `EXEC_*` 지적(회귀 · 새 테스트 실패 · 증거 테스트로 증명된 동작 변화 · 테스트가 안 지나간 변경)이 더해진다.
 `SEMGREP` · `SONAR_ISSUE` 는 외부 정적 분석기라 같은 곳을 짚은 AI 지적을 근거 확인에서 CONFIRMED 로 올려 준다.
+
+## Semgrep
+
+`SemgrepScanner` 가 리뷰마다 한 번, 바뀐 파일을 base · head 에서 함께 돌려 head 에만 있고 이번 PR 이 추가한 줄에 걸친 결과만 남긴다
+(base · head 는 라인 번호가 아니라 걸린 코드로 맞춘다). 그 결과를 `semgrep`(C) 과 `semgrep-quality`(D) 가 용도별로 나눠 가져간다.
+테스트 코드 제외, 실행 파일이 없으면 건너뛰고 분석 정보에 남긴다.
+
+| 용도 | 규칙 출처 | 예 |
+|---|---|---|
+| 보안 | 레지스트리 `p/default` (1,000여 개 중 대부분 보안) | SQL Injection, XSS, 하드코딩된 키, 안전하지 않은 암호화 |
+| 버그 패턴 | 레지스트리 `p/r2c-best-practices` 의 correctness | `==` 로 문자열 비교, 항상 참인 조건, 닫지 않은 자원 |
+| 모범 사례 | `p/r2c-best-practices` 의 best-practice · 성능 · 유지보수성 | 판정을 막지 않도록 MINOR 까지만 |
+| 팀 규칙 | 레포의 `.semgrep.yml` · `.semgrep.yaml` · `.semgrep/**/*.yml` | "컨트롤러에서 Repository 직접 호출 금지", "System.out 대신 Logger" |
+| 마이그레이션 | PR Guard 내장 [`semgrep/prguard-rules.yml`](src/main/resources/semgrep/prguard-rules.yml) + 레지스트리 compatibility | `new Integer(5)` → `Integer.valueOf(5)`, `Class.newInstance()`, `new URL(..)`, `javax.*` → `jakarta.*`, `WebSecurityConfigurerAdapter`, `new Buffer(..)` |
+
+- 규칙에 `fix` 가 있으면 지적에 **수정 제안**(바꿀 코드)이 붙는다. 코드를 직접 고치지는 않는다.
+- 팀 규칙은 **base 쪽** 파일을 읽는다. PR 이 자기 규칙을 고쳐 검사를 피하지 못하게 하려는 것으로, 새 규칙은 기본 브랜치에 들어간 뒤부터 적용된다.
+  규칙 파일이 잘못되면 그 파일만 빼고 다시 검사하고 이유를 분석 정보에 남긴다.
+- 팀 규칙 예 (레포 루트 `.semgrep.yml`):
+
+```yaml
+rules:
+  - id: no-repository-in-controller
+    languages: [java]
+    severity: WARNING
+    message: 컨트롤러는 Repository 를 직접 부르지 않고 Service 를 거친다
+    patterns:
+      - pattern-inside: |
+          @RestController
+          class $C { ... }
+      - pattern: $REPO.$M(...)
+      - metavariable-regex:
+          metavariable: $REPO
+          regex: (?i)^\w*repository$
+```
 
 ## SonarCloud
 
@@ -264,7 +300,8 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `EXEC_SELECTION_MAX_AGE` | `P14D` | 기준(전체 실행 기록)이 이보다 오래되면 전체를 돌린다 |
 | `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
 | `SEMGREP_ENABLED` · `SEMGREP_BIN` | `true` · `semgrep` | Semgrep 검사. API 이미지에 들어 있고, 로컬에서는 `pip install semgrep` 해야 돈다 (없으면 건너뜀) |
-| `SEMGREP_CONFIGS` | `p/default` | Semgrep 규칙. 레지스트리 이름 또는 규칙 파일 경로, 쉼표로 여러 개 (예: `p/java,p/owasp-top-ten`) |
+| `SEMGREP_CONFIGS` | `p/default,p/r2c-best-practices` | Semgrep 레지스트리 규칙. 레지스트리 이름 또는 규칙 파일 경로, 쉼표로 여러 개 (예: `p/java,p/owasp-top-ten`) |
+| `SEMGREP_BUNDLED` · `SEMGREP_REPO_RULES` | `true` · `true` | PR Guard 마이그레이션 규칙 · 레포 팀 규칙(`.semgrep.yml` · `.semgrep/`)도 함께 쓴다 |
 | `SEMGREP_TIMEOUT` | `PT3M` | Semgrep 한 번 실행의 제한 시간 |
 | `SONAR_ENABLED` | `false` | SonarCloud 분석 (실행 검증 필요) |
 | `SONAR_ORGANIZATION` · `SONAR_TOKEN` | (없음) | 프로젝트를 만들 조직 키, 그 조직에 프로젝트를 만들고 분석을 올릴 수 있는 토큰 |

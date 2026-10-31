@@ -191,14 +191,14 @@ public class SonarService {
         long deadline = System.currentTimeMillis() + props.timeout().toMillis();
         while (true) {
             JsonNode task = client.task(id);
-            String status = task == null ? "" : task.path("status").asText();
-            switch (status) {
-                case "SUCCESS":
+            if (task != null) {
+                String status = task.path("status").asText();
+                if ("SUCCESS".equals(status)) {
                     return;
-                case "FAILED", "CANCELED":
+                }
+                if ("FAILED".equals(status) || "CANCELED".equals(status)) {
                     throw new SonarException("SonarCloud 처리 " + status + ": " + task.path("errorMessage").asText(""));
-                default:
-                    break;
+                }
             }
             if (System.currentTimeMillis() > deadline) {
                 throw new SonarException("SonarCloud 처리 시간 초과 (" + props.timeout().toMinutes() + "분)");
