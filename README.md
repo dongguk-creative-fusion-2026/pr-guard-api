@@ -437,6 +437,7 @@ API_TOKEN=... node eval/score.mjs --api https://pr-guard-api-production.up.railw
 | `EXEC_MUTATION` · `EXEC_MUTATION_TIMEOUT` | `true` · `PT6M` | 변경분 변이 테스트를 할지, 러너에서 PIT 에 주는 시간 |
 | `EXEC_SELECTION_MAX_AGE` | `P14D` | 기준(전체 실행 기록)이 이보다 오래되면 전체를 돌린다 |
 | `EVIDENCE_FIXTURE_DIR` | (없음) | 있으면 LLM 대신 `{dir}/{owner}/{repo}/{PR 번호}/` 아래 미리 써 둔 테스트를 쓴다 (로컬 · 시연) |
+| `GUARDDOG_ENABLED` · `GUARDDOG_EXECUTABLE` | Docker 이미지: `true` · `/opt/guarddog/bin/guarddog`, 직접 실행: `false` · `guarddog` | 추가·변경된 npm/PyPI 직접 의존성 검사. 실행 시 지정한 환경변수가 이미지 기본값보다 우선한다. [설정과 배포](docs/guarddog.md) |
 | `SEMGREP_ENABLED` · `SEMGREP_BIN` | `true` · `semgrep` | Semgrep 검사. API 이미지에 들어 있고, 로컬에서는 `pip install semgrep` 해야 돈다 (없으면 건너뜀) |
 | `SEMGREP_CONFIGS` | `p/default,p/r2c-best-practices` | Semgrep 레지스트리 규칙. 레지스트리 이름 또는 규칙 파일 경로, 쉼표로 여러 개 (예: `p/java,p/owasp-top-ten`) |
 | `SEMGREP_BUNDLED` · `SEMGREP_REPO_RULES` | `true` · `true` | PR Guard 마이그레이션 규칙 · 레포 팀 규칙(`.semgrep.yml` · `.semgrep/`)도 함께 쓴다 |
@@ -469,3 +470,11 @@ git 이 PATH 에 있어야 한다. 로컬에서는 결과를 받을 공개 주�
 2. 같은 프로젝트에 Postgres 추가 → 서비스 Variables 에 `PGHOST=${{Postgres.PGHOST}}` 식으로 `PG*` 5개 참조
 3. `GITHUB_TOKEN`, `OPENAI_API_KEY` 설정
 4. Settings → Networking → Generate Domain. 이 주소를 pr-guard-web 의 `API_BASE_URL` 로 쓴다
+
+기본 `Dockerfile`은 GuardDog 3.2.0과 Semgrep 1.180.0을 각각 별도 Python 환경에 설치하고,
+비관리자 사용자로 실행한다. 이 이미지에서는 GuardDog가 기본 활성화된다.
+기존 Railway Variables에 `GUARDDOG_ENABLED=false`가 있으면 제거하거나 `true`로 변경하고,
+별도로 지정한 `GUARDDOG_EXECUTABLE`도 이미지의 경로와 맞춘다.
+최신 변경을 빌드·배포한 뒤 열린 테스트 PR에서 **다시 리뷰**를 실행한다.
+기존 리뷰의 저장된 `DISABLED` 결과는 재배포만으로 바뀌지 않는다.
+배포 전 두 검사 도구와 API 기동을 확인하려면 `./scripts/verify-guarddog.ps1`을 실행한다.

@@ -85,9 +85,12 @@ API를 root로 실행하거나 GuardDog v3 보호 기능을 해제하는 방식�
 스크립트는 다음을 수행한다.
 
 - 30초 제한으로 Linux Docker 엔진을 확인한다. 엔진이 없으면 `BLOCKED`를 기록하고 멈춘다.
-- `Dockerfile.guarddog`의 API 이미지와 별도 `verification` 이미지를 빌드한다.
-- 최종 API 이미지의 비관리자 사용자로 GuardDog 버전과 `is-number@7.0.0` 검사를 실행한다.
+- 기본 `Dockerfile`의 운영 API 이미지와 `Dockerfile.guarddog`의 별도 `verification` 이미지를 빌드한다.
+- 최종 API 이미지의 비관리자 사용자·기본 활성화·실행 파일 경로를 확인하고, 명시적으로 검사를 끌 수 있는지도 확인한다.
+- 운영 이미지의 비관리자 사용자로 GuardDog/Semgrep 버전과 실제 `is-number@7.0.0` 검사를 실행한다.
+  다운로드·규칙 오류가 없는지와 요청한 버전을 검사했는지도 확인한다.
 - 고유한 Docker 네트워크와 일회용 PostgreSQL을 생성하고 전용 통합 테스트를 실행한다.
+- 같은 PostgreSQL에 운영 API 이미지를 연결해 `/actuator/health`가 `UP`인지 확인한다.
 - 정상 종료·실패 모두 이번 실행이 만든 컨테이너·네트워크와 테스트 DB 볼륨만 정리한다.
   빌드한 로컬 이미지는 다음 검증을 위해 보관한다.
 
@@ -110,6 +113,9 @@ API를 root로 실행하거나 GuardDog v3 보호 기능을 해제하는 방식�
 
 - `verification-summary.json`: `PASSED` / `FAILED` / `BLOCKED`, 실패 단계와 원인.
 - `api-image-build.log`, `verification-image-build.log`, `integration-tests.log`: 빌드·통합 테스트 로그.
+- `runtime-image-config.json`, `guarddog-version.log`, `semgrep-version.log`: 기본 운영 이미지의 설정과 CLI 실행 기록.
+- `runtime-api-health.json`, `runtime-api.log`: 일회용 PostgreSQL에 연결한 운영 이미지의 API 기동 기록.
+- `runtime-npm-scan.log`, `runtime-npm-scan.stderr.log`: 운영 이미지의 실제 npm 검사 JSON과 별도 오류 출력.
 - `npm-is-number-7.0.0.json`, `pypi-six-1.17.0.json`, `pypi-missing-package.json`: 실제 CLI 응답.
 - `review-controlled-risk.json`, `review-malformed-output.json`, `review-timeout.json`: 로컬 리뷰 API 응답.
 - `review-live-six.json`: 실제 PyPI 검사와 연결한 리뷰 API 응답.
@@ -118,3 +124,27 @@ API를 root로 실행하거나 GuardDog v3 보호 기능을 해제하는 방식�
 
 실행하지 않은 항목의 결과 파일은 생성되지 않는다. 최종 완료 판단에는 `verification-summary.json`의
 현재 실행 결과를 기준으로 삼고, 이전 실행에서 남은 파일만으로 통과를 판단하지 않는다.
+
+## 기본 운영 이미지 검증 (2026-11-22)
+
+기본 `Dockerfile`에 GuardDog와 Semgrep을 함께 포함한 뒤 `scripts/verify-guarddog.ps1`을 실행했다.
+이번 기록은 로컬 Docker의 검증이며 Railway 운영 배포 완료를 뜻하지 않는다.
+
+| 항목 | 결과 |
+|---|---|
+| 기본 운영 이미지 빌드 | 통과. GuardDog 3.2.0 / Semgrep 1.180.0, 별도 Python 환경 |
+| 이미지 설정 | 비관리자 `app`, GuardDog 기본 활성화, 명시한 `false`로 끄기 가능 |
+| 운영 이미지의 실제 npm 검사 | `is-number@7.0.0` 지정 버전 검사 완료, 검사 오류 없음 |
+| API 기동 | 일회용 PostgreSQL에 연결해 `/actuator/health`가 `UP` |
+| 단위 테스트 | 46개 suite / 217개 테스트 통과, 실패·오류·건너뜀 0 |
+| 통합 테스트 | 실제 CLI 3개 + 자식 프로세스 4개 + 리뷰·DB·API 11개, 총 18개 통과 |
+| Semgrep 별도 런타임 검사 | 네트워크 없이 기존 `prguard-boxed-constructor` 규칙으로 `new Integer(5)` 탐지, `Integer.valueOf(5)` 수정 제안 확인 |
+| 기존 로컬 환경 | 기존 API·DB 컨테이너 유지, 이번 일회용 컨테이너·네트워크 정리 확인 |
+
+실제 PyPI 검사와 리뷰 흐름, 검사 실패·미완료 판정도 통합 테스트에 포함된다.
+위험 신호 응답은 무해한 테스트 자료이며 실제 악성 패키지 탐지 정확도를 측정한 것은 아니다.
+검증 중 유료 AI 호출이나 GitHub 코멘트 작성은 수행하지 않았다.
+
+요약은 `verification-summary.json`, 단위 테스트 집계는 `unit-test-summary.json`,
+별도 Semgrep 탐지 확인은 `semgrep-runtime-summary.json`과 `semgrep-runtime.json`에 남겼다.
+운영 적용 후에는 [운영 배포와 확인](guarddog.md#운영-배포와-확인)에 따라 실제 테스트 PR을 다시 리뷰한다.
