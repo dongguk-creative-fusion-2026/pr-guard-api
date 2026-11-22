@@ -1,4 +1,4 @@
-# Optional API image with GuardDog CLI. The default production Dockerfile is unchanged.
+# Compatibility image and integration-test stage. Production uses Dockerfile with both scanners.
 FROM gradle:8.14-jdk21 AS build
 WORKDIR /workspace
 COPY settings.gradle build.gradle ./

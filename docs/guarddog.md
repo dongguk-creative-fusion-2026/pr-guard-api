@@ -2,7 +2,7 @@
 
 `GuardDogAnalyzer`는 기존 `Analyzer`로 등록되어 C(보안) 단계에서 실행된다. 별도 레포나 DB 변경 없이
 `GET /api/reviews/{id}`의 `findings`, `context.guarddog`, `context.notes`에 결과가 반환된다.
-기존 판정 값은 유지하며, 패키지별 전용 화면 연결은 다음 웹 작업에서 진행한다.
+기존 판정 값은 유지하며, 웹 PR 상세 화면에서 검사 상태와 패키지별 근거를 확인할 수 있다.
 API 서버가 Java 프로젝트여도 검사 대상 PR은 npm/PyPI 프로젝트일 수 있다.
 
 2단계 검증 절차와 현재 확인된 결과는 [실행 검증 기록](guarddog-verification.md)을 참고한다.
@@ -10,8 +10,12 @@ API 서버가 Java 프로젝트여도 검사 대상 PR은 npm/PyPI 프로젝트�
 
 ## 실행
 
-기본값은 `GUARDDOG_ENABLED=false`. GuardDog **3.2.0**의 `scan --output-format json` 출력 계약을 기준으로 한다.
-Linux/macOS의 API 실행 환경에 `pip install guarddog==3.2.0`으로 CLI를 설치하고 다음을 설정한다.
+기본 `Dockerfile`은 GuardDog **3.2.0**과 Semgrep **1.180.0**을 별도 Python 환경에 설치한다.
+이미지 기본값은 `GUARDDOG_ENABLED=true`, 실행 파일은 `/opt/guarddog/bin/guarddog`이다.
+GuardDog **3.2.0**의 `scan --output-format json` 출력 계약을 기준으로 한다.
+
+Docker 없이 API를 직접 실행할 때는 기본 `GUARDDOG_ENABLED=false`를 유지한다.
+Linux/macOS 실행 환경에 `pip install guarddog==3.2.0`으로 CLI를 설치한 뒤 다음을 설정한다.
 
 ```dotenv
 GUARDDOG_ENABLED=true
@@ -23,11 +27,11 @@ GUARDDOG_MAX_OUTPUT_BYTES=1048576
 GUARDDOG_INCLUDE_DEV_DEPENDENCIES=true
 ```
 
-Windows는 GuardDog의 공식 지원 방식인 Docker를 사용한다. API와 CLI를 함께 넣는 선택 이미지:
+Windows에서는 Docker를 사용한다. Railway와 동일한 기본 API 이미지를 빌드한다:
 
 ```sh
-docker build -f Dockerfile.guarddog -t pr-guard-api:guarddog .
-docker run --rm --env-file .env -e GUARDDOG_ENABLED=true -p 8080:8080 pr-guard-api:guarddog
+docker build -t pr-guard-api:guarddog .
+docker run --rm --env-file .env -p 8080:8080 pr-guard-api:guarddog
 ```
 
 기존 PostgreSQL/GitHub 설정도 필요하다. DB 주소는 컨테이너에서 접근 가능한 주소로 설정한다.
@@ -36,10 +40,27 @@ Docker 이미지는 인기 패키지 목록 캐시를 `/var/cache/prguard/guardd
 `GUARDDOG_TOP_PACKAGES_CACHE_LOCATION`을 쓰기 가능한 캐시 디렉터리로 설정하고 GuardDog의
 `analyzer/metadata/resources` 데이터를 복사해 준비한다. 해당 변수만 검사 프로세스에 전달하며,
 설치된 프로그램 코드의 소유권이나 실행 권한은 높이지 않는다.
-기본 `Dockerfile`이나 배포 설정은 바뀌지 않는다. 선택 이미지의 빌드와 실제 npm/PyPI 검사는
-로컬 Docker에서 확인했다. 운영 환경에 적용할 때는 해당 환경에서 다시 검증한다.
+`railway.json`은 기본 `Dockerfile`을 계속 사용한다. 비관리자 사용자와 기존 JVM 메모리 비율은 유지한다.
+`Dockerfile.guarddog`는 이전 호환 이미지와 통합 테스트용 `verification` 단계를 위해 남겨 둔다.
 GuardDog v3 기본 보호 기능을 끄는 옵션은 전달하지 않으며,
 지원하지 않는 호스트에서는 실패를 기록한다.
+
+## 운영 배포와 확인
+
+1. 변경된 기본 `Dockerfile`로 새 API 이미지를 빌드·배포한다. 기존 이미지 재시작만으로 설치 내용은 바뀌지 않는다.
+2. Railway Variables에 `GUARDDOG_ENABLED=false`가 남아 있으면 제거하거나 `true`로 변경한다.
+   실행 시 주입한 환경변수는 이미지 기본값보다 우선한다. 실행 파일 경로를 따로 지정했다면
+   `/opt/guarddog/bin/guarddog` 또는 PATH에서 찾을 수 있는 `guarddog`로 맞춘다.
+3. `/actuator/health` 정상 응답을 확인한다.
+4. 의존성이 추가된 열린 테스트 PR에서 **다시 리뷰**를 실행한다. 기존 리뷰 기록은 자동 갱신되지 않는다.
+5. GuardDog 패널에서 패키지 이름·버전과 검사 완료 여부를 확인한다. 전체 머지 권고는 다른 검사 결과도 반영한다.
+
+검사는 API 이미지의 기본 활성화이며 OpenAI 키가 필요하지 않다. GuardDog가 꺼진 과거 리뷰의
+`MERGEABLE`은 의존성 검증 완료를 의미하지 않는다.
+
+배포 전 `./scripts/verify-guarddog.ps1`은 기본 운영 이미지의 활성화 설정, 두 CLI 실행,
+실제 npm 검사, 일회용 PostgreSQL을 연결한 API 기동과 리뷰 통합 테스트를 확인한다.
+이 검증은 유료 AI 호출과 GitHub 코멘트 작성을 하지 않으며 기존 로컬 DB를 사용하지 않는다.
 
 ## 검사 범위
 
